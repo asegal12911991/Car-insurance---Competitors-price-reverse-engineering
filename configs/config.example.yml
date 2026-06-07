@@ -1,0 +1,115 @@
+project:
+  name: car_insurance_competitor_pricing
+  random_seed: 42
+  output_dir: output/run_example
+
+data:
+  input_path: data/raw/competitor_quotes.csv
+  date_column: quote_date
+  own_premium_column: own_premium
+  conversion_column: converted
+  id_columns:
+    - quote_id
+  competitor_columns:
+    - comp_a_premium
+    - comp_b_premium
+    - comp_c_premium
+    - comp_d_premium
+    - comp_e_premium
+  # Alternative to competitor_columns:
+  # competitor_column_regex: "^comp_.*_premium$"
+  target:
+    name: avg_top_3_competitor_premium
+    top_n: 3
+  categorical_columns:
+    - channel
+    - region
+    - vehicle_segment
+    - coverage_type
+  numeric_columns:
+    - driver_age
+    - vehicle_age
+    - claim_count_3y
+  leakage_columns:
+    - quote_id
+
+features:
+  top_ns: [3, 5]
+  add_competitor_distribution: true
+  add_relative_position: true
+  add_temporal_features: true
+  add_segment_aggressiveness:
+    enabled: true
+    segment_columns:
+      - region
+      - channel
+
+split:
+  strategy: time
+  validation_fraction: 0.15
+  test_fraction: 0.20
+
+model:
+  backend: catboost
+  # backend options:
+  #   sklearn   — default, zero extra deps, gamma loss via HistGradientBoostingRegressor
+  #   catboost  — native categorical handling, Gamma/Tweedie loss; pip install -e "[catboost]"
+  #   lightgbm  — fastest training, gamma loss; pip install -e "[lightgbm]"
+  #   h2o       — MOJO export, enterprise deployment; pip install -e "[h2o]"
+  algorithm: hist_gradient_boosting
+  objective: regression
+  target_transform: none
+  max_runtime_seconds: 3600
+  memory_gb: 8
+  export_onnx: false   # set to true to export model.onnx (requires: pip install -e "[onnx]")
+  sklearn:
+    max_iter: 400
+    learning_rate: 0.05
+    max_leaf_nodes: 31
+    l2_regularization: 0.01
+    loss: gamma          # gamma deviance = correct loss for positive right-skewed prices
+  h2o:
+    algorithm: gbm
+    ntrees: 3000
+    max_depth: 6
+    learn_rate: 0.03
+    export_mojo: true
+    distribution: gamma  # gamma deviance for H2O GBM
+
+  catboost:
+    iterations: 1000
+    learning_rate: 0.05
+    depth: 6
+    l2_leaf_reg: 3.0
+    loss_function: "Tweedie:variance_power=2"  # Gamma deviance; native categorical handling
+    early_stopping_rounds: 50
+
+  lightgbm:
+    n_estimators: 1000
+    learning_rate: 0.05
+    num_leaves: 31
+    reg_lambda: 0.1
+    objective: gamma   # Gamma deviance
+    early_stopping_rounds: 50
+
+evaluation:
+  d2_min: 0.75           # blocking deployment gate — Gamma D² (explained deviance)
+  rmse_max: 60           # blocking deployment gate — absolute error floor
+  mape_max: 15.0         # advisory: scale-invariant %-error threshold
+  gini_min: 0.30         # advisory: actuarial discrimination floor
+  mean_bias_pct_max: 5.0 # advisory: systematic over/under-pricing tolerance
+  permutation_importance_repeats: 5
+  importance_sample_size: 5000
+
+monitoring:
+  drift_reference_path: output/run_example/reference_features.csv
+  current_data_path: data/raw/current_competitor_quotes.csv
+  psi_threshold: 0.20
+  performance_d2_drop_threshold: 0.05  # Gamma D² drop trigger
+  performance_rmse_increase_threshold: 15
+  performance_gini_drop_threshold: 0.05
+  performance_mape_increase_threshold: 3.0
+
+individual_competitor_models:
+  enabled: false              # set to true to train one sklearn model per competitor column
+  skip_missing_threshold: 0.40 # skip competitor if >40% of training rows have no quote

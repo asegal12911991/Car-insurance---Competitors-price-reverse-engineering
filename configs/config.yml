@@ -1,0 +1,92 @@
+project:
+  name: car_insurance_competitor_pricing
+  random_seed: 42
+  output_dir: output/run_example
+
+data:
+  input_path: data/raw/competitor_quotes.csv
+  date_column: quote_date
+  own_premium_column: own_premium
+  conversion_column: converted
+  id_columns:
+    - quote_id
+  competitor_columns:
+    - comp_a_premium
+    - comp_b_premium
+    - comp_c_premium
+    - comp_d_premium
+    - comp_e_premium
+  target:
+    name: avg_top_3_competitor_premium
+    top_n: 3
+  categorical_columns:
+    - channel
+    - region
+    - vehicle_segment
+    - coverage_type
+  numeric_columns:
+    - driver_age
+    - vehicle_age
+    - claim_count_3y
+  leakage_columns:
+    - quote_id
+
+features:
+  top_ns: [3, 5]
+  add_competitor_distribution: true
+  add_relative_position: true
+  add_temporal_features: true
+  add_segment_aggressiveness:
+    enabled: true
+    segment_columns:
+      - region
+      - channel
+
+split:
+  strategy: time
+  validation_fraction: 0.15
+  test_fraction: 0.20
+
+model:
+  backend: sklearn
+  algorithm: hist_gradient_boosting
+  objective: regression
+  target_transform: none
+  max_runtime_seconds: 3600
+  memory_gb: 8
+  export_onnx: false
+  sklearn:
+    max_iter: 400
+    learning_rate: 0.05
+    max_leaf_nodes: 31
+    l2_regularization: 0.01
+    loss: gamma
+
+evaluation:
+  d2_min: 0.75
+  rmse_max: 60
+  mape_max: 15.0
+  gini_min: 0.30
+  mean_bias_pct_max: 5.0
+  permutation_importance_repeats: 5
+  importance_sample_size: 5000
+
+monitoring:
+  drift_reference_path: output/run_example/reference_features.csv
+  current_data_path: data/raw/current_competitor_quotes.csv
+  psi_threshold: 0.20
+  performance_d2_drop_threshold: 0.05
+  performance_rmse_increase_threshold: 15
+  performance_gini_drop_threshold: 0.05
+  performance_mape_increase_threshold: 3.0
+
+individual_competitor_models:
+  enabled: false
+  skip_missing_threshold: 0.40
+
+tuning:
+  enabled: true
+  n_trials: 30
+  metric: mape
+  timeout_seconds: 120
+  show_progress_bar: false
