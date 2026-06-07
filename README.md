@@ -3,7 +3,6 @@
 Configurable AI/ML system for reverse engineering car insurance competitor pricing
 strategies and turning market prices into pricing-actionable intelligence.
 
-The system is designed around the Earnix-style lifecycle in `Docs/earnix_competitors_summary.md`:
 
 1. Validate and align competitor quote data.
 2. Engineer aggregated market features such as average top-N competitor premium.

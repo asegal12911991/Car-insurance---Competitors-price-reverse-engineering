@@ -40,3 +40,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+# Sensitive docs
+Docs/earnix_competitors_summary.md
