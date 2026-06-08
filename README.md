@@ -1,7 +1,7 @@
 # Competitor Pricing Analysis System
 
 Configurable AI/ML system for reverse engineering car insurance competitor pricing
-strategies and turning market prices into pricing-actionable intelligence.
+strategies and turning market prices into pricing-actionable intelligence. !
 
 
 1. Validate and align competitor quote data.
