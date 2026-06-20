@@ -106,8 +106,6 @@ Enabled via `tuning.enabled: true` in config.
 | `lightgbm` | `num_leaves`, `learning_rate`, `reg_lambda`, `min_child_samples` |
 | `h2o` | Not supported (raises an explicit error) |
 
-> **Note:** H2O also does not support ONNX export and cannot be combined with CatBoost.
-
 - Best params are applied to the config before final model training.
 - Writes `tuning_results.json` with per-trial values and best hyperparameters.
 
@@ -120,7 +118,7 @@ Four backends, all using Gamma / Tweedie loss appropriate for positive right-ske
 | `sklearn` (default) | `HistGradientBoostingRegressor`, Gamma loss, OrdinalEncoder for categoricals |
 | `catboost` | Native string categorical handling, Tweedie:variance_power=2 loss, early stopping on validation set |
 | `lightgbm` | sklearn ColumnTransformer preprocessing + LGBMRegressor Gamma loss, early stopping |
-| `h2o` | H2O GBM Gamma distribution, MOJO export, requires JVM |
+| `h2o` | H2O GBM Gamma distribution, MOJO export, requires JVM; no Optuna tuning, no ONNX export |
 
 All backends produce:
 - `model.joblib` — serialised model bundle (model + preprocessor + metadata)
@@ -331,8 +329,6 @@ individual_competitor_models:
 
 ## CLI
 
-Using the installed console script:
-
 ```bash
 # Train
 competitor-pricing-ai train --config configs/config.yml
@@ -342,14 +338,9 @@ competitor-pricing-ai validate-config --config configs/config.yml
 
 # Monitor drift
 competitor-pricing-ai monitor --config configs/config.yml
-```
 
-Or using the module directly (no install required):
-
-```bash
-python -m competitor_pricing_ai.cli train --config configs/config.yml
-python -m competitor_pricing_ai.cli validate-config --config configs/config.yml
-python -m competitor_pricing_ai.cli monitor --config configs/config.yml
+# All commands also available without installing the console script:
+# python -m competitor_pricing_ai.cli <subcommand> --config configs/config.yml
 ```
 
 ---

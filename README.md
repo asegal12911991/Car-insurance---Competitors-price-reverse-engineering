@@ -62,7 +62,6 @@ Four model backends are available. Set `model.backend` in the config:
 | `h2o` | `pip install -e "[h2o]"` | MOJO export, enterprise deployment | Gamma | H2O MOJO |
 
 H2O does **not** support CatBoost — they are entirely separate frameworks.
-H2O does **not** support Optuna hyperparameter tuning.
 
 ## Hyperparameter Tuning
 
@@ -132,9 +131,7 @@ individual_competitor_models:
   skip_missing_threshold: 0.40   # skip competitors with > 40% missing quotes
 ```
 
-Per-competitor artifacts (`model_{competitor}.joblib`, `metrics_{competitor}.json`,
-`predictions_{split}_{competitor}.csv`, `feature_importance_{competitor}.csv`,
-`lift_table_test_{competitor}.json`) are written alongside the aggregate model outputs.
+Per-competitor versions of all standard outputs (model, metrics, predictions, feature importance, lift table) are written alongside the aggregate model outputs.
 
 ## Reference Basket Index
 

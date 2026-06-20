@@ -165,11 +165,11 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
   - Time-based split confirmed
   - D² ≥ d2_min on both validation and test sets
   - RMSE ≤ rmse_max on both validation and test sets
-  - Model export file present (`model.joblib`; MOJO if H2O; ONNX if requested)
-  - Runtime within `model.max_runtime_seconds`
+  - Model export file present (serialised model; MOJO if H2O; ONNX if requested)
+  - Runtime within the configured budget
 - **Advisory checks** (logged and flagged but non-blocking):
   - MAPE ≤ mape_max, Gini ≥ gini_min, Bias% ≤ mean_bias_pct_max on validation set
-  - Leakage review: own premium circularity check (correlation ≥ 0.85 with target triggers warning)
+  - Leakage review: own premium circularity check (high correlation with target triggers warning)
 - Monitoring: PSI threshold alerts, performance degradation thresholds
 - Governance: human review gate required before pricing actions are deployed
 
