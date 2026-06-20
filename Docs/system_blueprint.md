@@ -47,7 +47,7 @@ Raw quotes CSV
 7. Business report  ──────────────────────────► business_report.md
       │
       ▼
-8. [Optional] Monitoring  ────────────────────► monitoring_results.json
+8. [Optional] Monitoring  ────────────────────► monitoring_metrics.json, monitoring_report.md
 ```
 
 ---
@@ -105,6 +105,8 @@ Enabled via `tuning.enabled: true` in config.
 | `catboost` | `depth`, `learning_rate`, `l2_leaf_reg` |
 | `lightgbm` | `num_leaves`, `learning_rate`, `reg_lambda`, `min_child_samples` |
 | `h2o` | Not supported (raises an explicit error) |
+
+> **Note:** H2O also does not support ONNX export and cannot be combined with CatBoost.
 
 - Best params are applied to the config before final model training.
 - Writes `tuning_results.json` with per-trial values and best hyperparameters.
@@ -227,8 +229,10 @@ lift_table_test_{competitor}.json
 ### 8 · Monitoring (`monitoring.py`)
 
 Compares current data distribution against `reference_features.csv` from the last training run.
+Writes `monitoring_metrics.json` (structured drift and performance data) and `monitoring_report.md`
+(human-readable summary with retraining recommendation).
 
-- PSI per feature, flagged red above `monitoring.psi_threshold` (default 0.20).
+- PSI per feature, flagged above `monitoring.psi_threshold` (default 0.20).
 - Performance degradation alerts:
 
 | Alert | Default threshold |
@@ -327,14 +331,24 @@ individual_competitor_models:
 
 ## CLI
 
+Using the installed console script:
+
 ```bash
 # Train
-python -m competitor_pricing_ai.cli train --config configs/config.yml
+competitor-pricing-ai train --config configs/config.yml
 
 # Validate config only
-python -m competitor_pricing_ai.cli validate-config --config configs/config.yml
+competitor-pricing-ai validate-config --config configs/config.yml
 
 # Monitor drift
+competitor-pricing-ai monitor --config configs/config.yml
+```
+
+Or using the module directly (no install required):
+
+```bash
+python -m competitor_pricing_ai.cli train --config configs/config.yml
+python -m competitor_pricing_ai.cli validate-config --config configs/config.yml
 python -m competitor_pricing_ai.cli monitor --config configs/config.yml
 ```
 

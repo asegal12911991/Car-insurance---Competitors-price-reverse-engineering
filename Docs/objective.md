@@ -160,9 +160,16 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
 ## Quality Assurance
 
 - Automated QA checklist written to `qa_checklist.json` after every run
-- Blocking gates: D² and RMSE must pass before deployment is approved
-- Advisory checks: MAPE, Gini, Bias% logged and flagged but non-blocking
-- Leakage detection: own premium circularity check, competitor column overlap warning
+- **Blocking gates** (must all pass before deployment is approved):
+  - Data contract valid (sufficient rows with enough competitor quotes)
+  - Time-based split confirmed
+  - D² ≥ d2_min on both validation and test sets
+  - RMSE ≤ rmse_max on both validation and test sets
+  - Model export file present (`model.joblib`; MOJO if H2O; ONNX if requested)
+  - Runtime within `model.max_runtime_seconds`
+- **Advisory checks** (logged and flagged but non-blocking):
+  - MAPE ≤ mape_max, Gini ≥ gini_min, Bias% ≤ mean_bias_pct_max on validation set
+  - Leakage review: own premium circularity check (correlation ≥ 0.85 with target triggers warning)
 - Monitoring: PSI threshold alerts, performance degradation thresholds
 - Governance: human review gate required before pricing actions are deployed
 
