@@ -5,6 +5,10 @@
 Reverse engineer competitor pricing strategies from observed market quotes and
 convert the output into actionable, data-driven pricing decisions for car insurance.
 
+The primary deliverable is a leakage-safe, frozen `market_anchor` input for a separately
+governed demand model and optimisation process. This project has no direct Earnix dependency;
+it produces historical and batch-scored handoff files plus optional ONNX artifacts.
+
 ---
 
 ## Core Capabilities
@@ -21,6 +25,14 @@ convert the output into actionable, data-driven pricing decisions for car insura
 | Business intelligence reporting | `business_report.md` with model performance, QA status, feature drivers, and governance notes |
 | Monitoring | PSI-based feature drift detection and performance degradation alerts against configured thresholds |
 | Interactive dashboard | 7-tab Streamlit application covering market overview through raw-data profile exploration |
+| Demand-model handoff | Rolling-origin historical anchors, frozen relative-price fields, batch scoring, provenance hashes |
+
+## Downstream Acceptance Boundary
+
+This project can test whether the anchor adds out-of-time conversion signal when a conversion
+column is present. It cannot approve demand elasticity or an optimised tariff. Downstream
+governance must validate calibration, elasticity sign and magnitude, profit impact, and the
+stability of recommended prices. The anchor stays fixed while candidate own price changes.
 
 ---
 

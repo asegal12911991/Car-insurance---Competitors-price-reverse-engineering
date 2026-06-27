@@ -9,6 +9,9 @@ The modelled target is an aggregated market component — by default
 `avg_top_3_competitor_premium` — because top-N competitor prices are more stable than
 individual competitor prices and more directly useful for optimisation.
 
+For production handoff the prediction is called `market_anchor`. It is independent of own
+premium and remains fixed while a separate optimiser varies candidate own price.
+
 ---
 
 ## Pipeline Architecture
@@ -51,6 +54,15 @@ Raw quotes CSV
 ```
 
 ---
+
+### Standalone demand-model contract
+
+- `historical_market_features.csv` uses only competitor observations before each scoring month.
+- Warm-up observations are unscored; they are never backfilled using future information.
+- `score` accepts risk/date fields without requiring competitor premiums.
+- `market_anchor` is frozen; only own candidate premium moves in downstream optimisation.
+- `log_relative_price = log(candidate own premium / market_anchor)` is the recommended input.
+- `demand_readiness.json` is diagnostic only and does not replace downstream governance.
 
 ## Step Details
 

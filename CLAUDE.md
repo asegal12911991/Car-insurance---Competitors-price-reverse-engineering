@@ -32,6 +32,9 @@ competitor-pricing-ai validate-config --config configs/config.example.yml
 # Run monitoring
 competitor-pricing-ai monitor --config configs/config.example.yml
 
+# Score a standalone market-anchor handoff file
+competitor-pricing-ai score --config configs/config.example.yml --input quotes.csv --output anchors.csv
+
 # Generate synthetic data for testing
 python scripts/generate_sample_data.py --output data/raw/competitor_quotes.csv
 
@@ -73,7 +76,13 @@ All outputs land in `output/<run_name>/` as configured by `project.output_dir`.
 
 **Model serialisation.** `model.joblib` is a dict `{model, backend, feature_columns, categorical_columns, numeric_columns, target_column, target_transform}`, not a bare model object. `monitoring.py` and `basket.py` use `load_sklearn_bundle()` / `predict_with_bundle()` from `models.py` to score saved models — never unpickle and call `.predict()` directly.
 
-**own_premium leakage check.** If `own_premium_column` correlates ≥ 0.85 with the target, `features.py` emits a leakage warning in `FeatureMetadata.leakage_warnings`. This propagates to `qa_checklist.json` and `business_report.md`.
+**Frozen market-anchor contract.** Own premium, conversion, competitor observations, IDs,
+weights, and target-derived fields are hard-excluded from competitor-model predictors.
+`historical.py` creates expanding-window prior-month predictions for demand development;
+`scoring.py` creates batch-scored frozen anchors for downstream handoff.
+
+**Standalone boundary.** This repository does not call Earnix. `demand_readiness.json` is a
+local signal diagnostic; final elasticity and optimisation acceptance remains downstream.
 
 ### Four model backends
 

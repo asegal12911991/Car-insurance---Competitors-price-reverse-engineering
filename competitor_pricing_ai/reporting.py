@@ -50,9 +50,9 @@ def build_qa_checklist(
     checks = [
         {
             "name": "data_contract_valid",
-            "passed": data_quality["rows_with_enough_competitors"] > 0,
+            "passed": data_quality["rows_eligible_for_target"] > 0,
             "blocking": True,
-            "detail": f"{data_quality['rows_with_enough_competitors']} rows can calculate target",
+            "detail": f"{data_quality['rows_eligible_for_target']} rows can calculate target",
         },
         {
             "name": "time_based_split",
@@ -121,6 +121,15 @@ def build_qa_checklist(
             "detail": onnx_path if onnx_path else ("Not requested" if not config.model.export_onnx else "ONNX export was not produced"),
         },
         {
+            "name": "onnx_prediction_parity_when_requested",
+            "passed": (
+                not config.model.export_onnx
+                or bool(onnx_path and (Path(onnx_path).parent / "onnx_parity.json").exists())
+            ),
+            "blocking": True,
+            "detail": "Python/ONNX parity artifact required for ONNX handoff",
+        },
+        {
             "name": "runtime_budget",
             "passed": runtime_seconds <= config.model.max_runtime_seconds,
             "blocking": True,
@@ -174,6 +183,8 @@ def write_business_report(
     artifacts: dict[str, str | None],
     runtime_seconds: float,
     individual_results: dict[str, Any] | None = None,
+    historical_metadata: dict[str, Any] | None = None,
+    demand_readiness: dict[str, Any] | None = None,
 ) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +229,18 @@ def write_business_report(
             "## Individual Competitor Models",
             "",
             individual_competitors_table(individual_results),
+            "",
+        ]
+    if historical_metadata:
+        lines += [
+            "## Demand-Model Handoff",
+            "",
+            f"- Historical rows scored: {historical_metadata['rows_scored']:,}",
+            f"- Warm-up rows intentionally unscored: "
+            f"{historical_metadata['rows_warmup_unscored']:,}",
+            "- Anchor rule: prior-month observations only; anchor stays frozen during optimisation.",
+            f"- Standalone demand diagnostic: `{(demand_readiness or {}).get('status', 'not run')}`",
+            "- Final elasticity and optimisation acceptance remains downstream.",
             "",
         ]
     lines += [
@@ -322,12 +345,15 @@ def interpretation_text(
         f"The out-of-time test model {threshold_text} the configured deployment thresholds "
         f"(D² >= {config.evaluation.d2_min}, RMSE <= {config.evaluation.rmse_max}).{gini_text}{bias_text} "
         f"The strongest observed pricing driver is {top_feature}. Use the predictions as a "
-        "market-price anchor for own-to-market ratios, optimization constraints, and segment "
-        "scenario testing. Human review is still required before production pricing action."
+        "frozen market-price anchor for downstream relative-price construction and scenario "
+        "testing. Human review is still required before production pricing action."
     )
 
 
 def leakage_text(feature_metadata: FeatureMetadata) -> str:
     if not feature_metadata.leakage_warnings:
-        return "No automatic leakage warnings were detected. Continue to review own-premium usage and competitor-panel construction during model governance."
+        return (
+            "No automatic leakage warnings were detected. Own premium and post-offer fields "
+            "are hard-excluded; continue to review competitor-panel construction."
+        )
     return "\n".join(f"- {warning}" for warning in feature_metadata.leakage_warnings)

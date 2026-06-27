@@ -21,6 +21,15 @@ data:
   target:
     name: avg_top_3_competitor_premium
     top_n: 3
+    aggregation: avg_top_n  # challenger options: min | median | softmin
+    softmin_temperature: 25.0
+    # "complete" keeps a stable competitor panel and avoids non-random availability bias.
+    # Use "available" only with an explicit actuarial justification.
+    missing_panel_policy: complete
+  comparability_columns:
+    - coverage_type
+  premium_basis: annual_gross
+  premium_currency: ILS
   categorical_columns:
     - channel
     - region
@@ -50,7 +59,7 @@ split:
   test_fraction: 0.20
 
 model:
-  backend: catboost
+  backend: sklearn
   # backend options:
   #   sklearn   — default, zero extra deps, gamma loss via HistGradientBoostingRegressor
   #   catboost  — native categorical handling, Gamma/Tweedie loss; pip install -e "[catboost]"
@@ -81,7 +90,7 @@ model:
     learning_rate: 0.05
     depth: 6
     l2_leaf_reg: 3.0
-    loss_function: "Tweedie:variance_power=2"  # Gamma deviance; native categorical handling
+    loss_function: "Tweedie:variance_power=1.9"
     early_stopping_rounds: 50
 
   lightgbm:
@@ -109,7 +118,25 @@ monitoring:
   performance_rmse_increase_threshold: 15
   performance_gini_drop_threshold: 0.05
   performance_mape_increase_threshold: 3.0
+  max_prediction_horizon_days: 90
 
 individual_competitor_models:
   enabled: false              # set to true to train one sklearn model per competitor column
   skip_missing_threshold: 0.40 # skip competitor if >40% of training rows have no quote
+
+tuning:
+  enabled: false
+  n_trials: 30
+  metric: mape
+  timeout_seconds: 120
+  show_progress_bar: false
+
+historical_predictions:
+  enabled: true
+  min_train_rows: 500
+  retrain_frequency: MS
+
+demand_readiness:
+  enabled: true
+  minimum_rows: 500
+  test_fraction: 0.20

@@ -81,28 +81,32 @@ def regression_metrics(y_true, y_pred, weights=None) -> dict[str, float]:
         "mape": mape,
         "mean_bias": mean_bias,
         "mean_bias_pct": mean_bias_pct,
-        "gini": gini_coefficient(y_true, y_pred),
+        "gini": gini_coefficient(y_true, y_pred, w),
         "n": int(mask.sum()),
     }
 
 
-def gini_coefficient(y_true, y_pred) -> float:
-    """Actuarial Gini: how well predicted prices discriminate actual price levels.
-
-    Ranges 0 (random) to 1 (perfect rank ordering). Computed as
-    2 * AUC(Lorenz curve) - 1 where observations are ordered by predicted value.
-    """
+def gini_coefficient(y_true, y_pred, weights=None) -> float:
+    """Normalized actuarial Gini; perfect ordering is 1 for any target dispersion."""
     y_true = np.asarray(y_true, dtype=float)
     y_pred = np.asarray(y_pred, dtype=float)
     if len(y_true) < 2 or y_true.sum() == 0:
         return float("nan")
-    order = np.argsort(y_pred)
-    sorted_actual = y_true[order]
-    cumulative_actual = np.cumsum(sorted_actual) / sorted_actual.sum()
-    cumulative_pop = np.arange(1, len(sorted_actual) + 1) / len(sorted_actual)
-    lorenz_area = float(np.trapz(cumulative_actual, cumulative_pop))
+    w = np.ones(len(y_true)) if weights is None else np.asarray(weights, dtype=float)
+
+    def concentration(score) -> float:
+        order = np.lexsort((np.arange(len(score)), score))
+        sorted_weight = w[order]
+        sorted_loss = y_true[order] * sorted_weight
+        cumulative_weight = np.cumsum(sorted_weight) / sorted_weight.sum()
+        cumulative_loss = np.cumsum(sorted_loss) / sorted_loss.sum()
+        area = float(np.trapz(cumulative_loss, cumulative_weight))
+        return 1 - 2 * area
+
+    raw = concentration(y_pred)
+    perfect = concentration(y_true)
     # Lorenz curve for a good model bows BELOW the 45° line → area < 0.5 → 1 - 2*area > 0
-    return round(1 - 2 * lorenz_area, 6)
+    return round(raw / perfect, 6) if abs(perfect) > 1e-12 else float("nan")
 
 
 def lift_table(y_true, y_pred, n_quantiles: int = 10, weights=None) -> list[dict]:

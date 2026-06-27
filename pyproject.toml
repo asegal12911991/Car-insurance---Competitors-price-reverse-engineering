@@ -21,7 +21,7 @@ h2o = ["h2o>=3.44"]
 catboost = ["catboost>=1.2"]
 lightgbm = ["lightgbm>=4.0"]
 tuning = ["optuna>=3.0"]
-onnx = ["skl2onnx>=1.16", "onnx>=1.14"]
+onnx = ["skl2onnx>=1.16", "onnx>=1.14", "onnxruntime>=1.17"]
 plots = ["matplotlib>=3.7", "shap>=0.44", "streamlit>=1.35", "plotly>=5.20"]
 dev = ["pytest>=7.4", "ruff>=0.5"]
 

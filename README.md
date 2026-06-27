@@ -3,6 +3,11 @@
 Configurable AI/ML system for reverse engineering car insurance competitor pricing
 strategies and turning market prices into pricing-actionable intelligence.
 
+The production purpose is to create a **frozen competitor market anchor** for a separate
+demand model and price-optimisation workflow. This standalone repository does not connect to
+Earnix or deploy pricing decisions. It creates governed CSV/ONNX handoff artifacts that can be
+imported and independently approved downstream.
+
 1. Validate and align competitor quote data.
 2. Engineer aggregated market features such as average top-N competitor premium.
 3. Use strict time-based train/validation/test splits.
@@ -10,6 +15,7 @@ strategies and turning market prices into pricing-actionable intelligence.
 5. Export scoring artifacts, including optional H2O MOJO and ONNX exports.
 6. Generate QA, feature-importance, and business insight reports.
 7. Monitor drift and refresh need.
+8. Create rolling-origin historical demand features and batch-scored production anchors.
 
 ## Quick Start
 
@@ -49,6 +55,33 @@ Outputs are written to the configured `project.output_dir`, including:
 - `qa_checklist.json` — deployment gate and advisory QA check results.
 - `business_report.md` — human-readable run summary with performance and governance notes.
 - `run_config_resolved.yml` — fully resolved configuration snapshot.
+- `historical_market_features.csv` — prior-period-only anchors for demand development.
+- `demand_readiness.json` — local incremental-signal diagnostic when conversion exists.
+- `run_manifest.json` — hashes and provenance for every artifact in the run.
+
+## Demand-Model Handoff
+
+The model never uses own premium, conversion, competitor observations, identifiers, or
+target-derived fields as predictors. Historical anchors use expanding-window monthly fits;
+the initial warm-up period is left unscored rather than backfilled with future information.
+
+```text
+market_anchor = predicted comparable competitor premium
+relative_price_ratio = candidate_own_premium / market_anchor
+log_relative_price = log(candidate_own_premium / market_anchor)
+```
+
+`market_anchor` must stay frozen while the optimiser varies candidate own premium.
+
+```powershell
+competitor-pricing-ai score `
+  --config configs/config.example.yml `
+  --input data/raw/current_quotes.csv `
+  --output output/current_market_anchor.csv
+```
+
+`demand_readiness.json` is only a standalone proxy. Final elasticity, calibration, profit,
+and optimisation-stability acceptance belongs in the governed demand/optimisation process.
 
 ## Backends
 
@@ -57,7 +90,7 @@ Four model backends are available. Set `model.backend` in the config:
 | Backend | Install | Best for | Loss function | Production export |
 |---|---|---|---|---|
 | `sklearn` | built-in | Default, zero extra deps | Gamma | ONNX via skl2onnx |
-| `catboost` | `pip install -e "[catboost]"` | Many categoricals, production | Tweedie (variance_power=2) | Native `.cbm` |
+| `catboost` | `pip install -e "[catboost]"` | Many categoricals | Tweedie (variance_power=1.9) | Native `.cbm` |
 | `lightgbm` | `pip install -e "[lightgbm]"` | Speed, large datasets | Gamma | — |
 | `h2o` | `pip install -e "[h2o]"` | MOJO export, enterprise deployment | Gamma | H2O MOJO |
 
@@ -172,6 +205,12 @@ Each row should represent a comparable quote profile or market observation. Typi
 - Own premium, if available.
 - Competitor premiums, either labeled or unlabeled.
 - Optional conversion, renewal, cancellation, or demand outcomes.
+
+Competitor premiums must share coverage, limits, excess/deductible, annualisation, fees,
+taxes, and payment basis. Configure those fields under `data.comparability_columns`. The
+default `missing_panel_policy: complete` keeps a fixed panel and avoids changing target
+composition when a low-priced competitor does not quote. Challenger targets (`min`, `median`,
+and `softmin`) can be compared across governed runs by downstream demand value.
 
 The pipeline creates robust aggregated targets, with `avg_top_3_competitor_premium`
 as the recommended default. Individual competitor prices can be noisy; aggregated

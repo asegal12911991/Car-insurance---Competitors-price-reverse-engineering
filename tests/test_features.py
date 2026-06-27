@@ -23,7 +23,7 @@ def make_config() -> PipelineConfig:
             competitor_columns=["comp_a", "comp_b", "comp_c"],
             target=TargetConfig(name="avg_top_2_competitor_premium", top_n=2),
             categorical_columns=["region"],
-            numeric_columns=["driver_age", "own_premium", "comp_a"],
+            numeric_columns=["driver_age", "comp_a"],
             id_columns=["quote_id"],
         ),
         features=FeaturesConfig(top_ns=[2]),
@@ -73,4 +73,20 @@ def test_select_model_features_excludes_competitor_and_target_derived_columns() 
     assert "rank_own_premium" not in feature_columns
     assert categorical == ["region"]
     assert "driver_age" in numeric
-    assert "own_premium" in numeric
+    assert "own_premium" not in numeric
+
+
+def test_complete_panel_policy_drops_composition_changing_target() -> None:
+    config = make_config()
+    df = pd.DataFrame({
+        "quote_id": [1],
+        "quote_date": ["2025-01-01"],
+        "region": ["center"],
+        "driver_age": [40],
+        "own_premium": [105],
+        "comp_a": [100],
+        "comp_b": [120],
+        "comp_c": [None],
+    })
+    engineered, _ = engineer_market_features(df, config)
+    assert pd.isna(engineered.loc[0, "avg_top_2_competitor_premium"])

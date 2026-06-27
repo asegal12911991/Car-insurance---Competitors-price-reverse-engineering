@@ -11,6 +11,7 @@ import pandas as pd
 from competitor_pricing_ai.config import PipelineConfig, load_config, resolve_project_path
 from competitor_pricing_ai.data import coerce_basic_types, load_dataset, validate_input_data
 from competitor_pricing_ai.features import engineer_market_features
+from competitor_pricing_ai.governance import verify_manifest_artifact
 from competitor_pricing_ai.metrics import regression_metrics
 from competitor_pricing_ai.models import load_sklearn_bundle, predict_with_sklearn_bundle
 from competitor_pricing_ai.reporting import write_json
@@ -37,13 +38,25 @@ def run_monitoring(config_or_path: PipelineConfig | str | Path) -> dict[str, Any
     if not reference_path.exists():
         raise ValueError(f"Reference feature file does not exist: {reference_path}")
 
+    verify_manifest_artifact(output_dir, "model", model_path)
+    verify_manifest_artifact(output_dir, "reference_features", reference_path)
+
     bundle = load_sklearn_bundle(model_path)
     reference = pd.read_csv(reference_path)
     current_raw = load_dataset(resolve_project_path(current_path, config.root_dir))
-    validate_input_data(current_raw, config)
+    current_quality = validate_input_data(current_raw, config)
     current_typed = coerce_basic_types(current_raw, config)
     current_engineered, _ = engineer_market_features(current_typed, config)
     current_engineered["prediction"] = predict_with_sklearn_bundle(bundle, current_engineered)
+    training_cutoff = pd.to_datetime(bundle.get("training_cutoff"), errors="coerce")
+    current_max_date = pd.to_datetime(
+        current_engineered[config.data.date_column], errors="coerce"
+    ).max()
+    prediction_horizon_days = (
+        int((current_max_date - training_cutoff).days)
+        if pd.notna(training_cutoff) and pd.notna(current_max_date)
+        else None
+    )
 
     feature_columns = bundle["feature_columns"]
     categorical_columns = set(bundle["categorical_columns"])
@@ -67,10 +80,25 @@ def run_monitoring(config_or_path: PipelineConfig | str | Path) -> dict[str, Any
         performance,
         output_dir / "metrics.json",
         config,
+        prediction_horizon_days,
     )
     metrics = {
         "drift": drift,
         "current_performance": performance,
+        "market_health": {
+            "complete_panel_rate": (
+                current_quality["rows_with_complete_competitor_panel"]
+                / max(current_quality["rows"], 1)
+            ),
+            "target_available_rate": (
+                current_quality["rows_with_enough_competitors"]
+                / max(current_quality["rows"], 1)
+            ),
+            "mean_anchor_bias_pct": (
+                performance.get("mean_bias_pct") if performance else None
+            ),
+            "prediction_horizon_days": prediction_horizon_days,
+        },
         "refresh_recommendation": refresh_recommendation,
     }
     write_json(metrics, output_dir / "monitoring_metrics.json")
@@ -157,6 +185,7 @@ def build_refresh_recommendation(
     current_performance: dict[str, float] | None,
     training_metrics_path: Path,
     config: PipelineConfig,
+    prediction_horizon_days: int | None = None,
 ) -> dict[str, Any]:
     drift_reviews = [
         item for item in drift if item.get("status") in {"review", "missing"}
@@ -164,6 +193,14 @@ def build_refresh_recommendation(
     reasons = []
     if drift_reviews:
         reasons.append(f"{len(drift_reviews)} features exceed drift thresholds or are missing")
+    if (
+        prediction_horizon_days is not None
+        and prediction_horizon_days > config.monitoring.max_prediction_horizon_days
+    ):
+        reasons.append(
+            f"Prediction horizon is {prediction_horizon_days} days; maximum is "
+            f"{config.monitoring.max_prediction_horizon_days}"
+        )
 
     if current_performance and training_metrics_path.exists():
         import json
@@ -214,7 +251,6 @@ def write_monitoring_report(
         gini    = row.get("gini", float("nan"))
         bias    = row.get("mean_bias_pct", float("nan"))
         d2_str   = f", D²={d2:.4f}"       if not np.isnan(d2)   else ""
-        gini_str = f", Gini={gini:.4f}"   if not np.isnan(gini) else ""
         bias_str = f", Bias%={bias:+.2f}%" if not np.isnan(bias) else ""
         lines.append(
             f"Gini={gini:.4f}, MAPE={row['mape']:.2f}%{bias_str}"

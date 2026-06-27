@@ -24,6 +24,9 @@ class ProjectConfig:
 class TargetConfig:
     name: str = "avg_top_3_competitor_premium"
     top_n: int = 3
+    missing_panel_policy: str = "complete"
+    aggregation: str = "avg_top_n"
+    softmin_temperature: float = 25.0
 
 
 @dataclass
@@ -39,6 +42,10 @@ class DataConfig:
     categorical_columns: list[str] = field(default_factory=list)
     numeric_columns: list[str] = field(default_factory=list)
     leakage_columns: list[str] = field(default_factory=list)
+    comparability_columns: list[str] = field(default_factory=list)
+    weight_column: str | None = None
+    premium_basis: str = "annual_gross"
+    premium_currency: str | None = None
 
 
 @dataclass
@@ -141,11 +148,12 @@ class MonitoringConfig:
     performance_rmse_increase_threshold: float = 15.0
     performance_gini_drop_threshold: float = 0.05
     performance_mape_increase_threshold: float = 3.0
+    max_prediction_horizon_days: int = 90
 
 
 @dataclass
 class TuningConfig:
-    enabled: bool = True
+    enabled: bool = False
     n_trials: int = 50
     metric: str = "mape"          # metric to optimise: mape, d2, gini, rmsle, rmse
     timeout_seconds: int | None = None   # optional wall-clock cap
@@ -156,6 +164,20 @@ class TuningConfig:
 class IndividualCompetitorModelsConfig:
     enabled: bool = False
     skip_missing_threshold: float = 0.40
+
+
+@dataclass
+class HistoricalPredictionsConfig:
+    enabled: bool = True
+    min_train_rows: int = 500
+    retrain_frequency: str = "MS"
+
+
+@dataclass
+class DemandReadinessConfig:
+    enabled: bool = True
+    minimum_rows: int = 500
+    test_fraction: float = 0.20
 
 
 @dataclass
@@ -171,6 +193,10 @@ class PipelineConfig:
         default_factory=IndividualCompetitorModelsConfig
     )
     tuning: TuningConfig = field(default_factory=TuningConfig)
+    historical_predictions: HistoricalPredictionsConfig = field(
+        default_factory=HistoricalPredictionsConfig
+    )
+    demand_readiness: DemandReadinessConfig = field(default_factory=DemandReadinessConfig)
     config_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -229,6 +255,10 @@ def load_config(path: str | Path) -> PipelineConfig:
         if isinstance(individual_raw, bool):
             individual_raw = {"enabled": individual_raw}
         individual_competitor_models = IndividualCompetitorModelsConfig(**individual_raw)
+        historical_predictions = HistoricalPredictionsConfig(
+            **raw.get("historical_predictions", {})
+        )
+        demand_readiness = DemandReadinessConfig(**raw.get("demand_readiness", {}))
     except TypeError as exc:
         raise ConfigError(f"Invalid configuration structure: {exc}") from exc
 
@@ -242,6 +272,8 @@ def load_config(path: str | Path) -> PipelineConfig:
         monitoring=monitoring,
         individual_competitor_models=individual_competitor_models,
         tuning=TuningConfig(**raw.get("tuning", {})),
+        historical_predictions=historical_predictions,
+        demand_readiness=demand_readiness,
         config_path=str(config_path),
     )
     validate_config(config)
@@ -259,6 +291,21 @@ def validate_config(config: PipelineConfig) -> None:
         )
     if config.data.target.top_n <= 0:
         raise ConfigError("data.target.top_n must be positive")
+    if config.data.target.missing_panel_policy not in {"complete", "available"}:
+        raise ConfigError("data.target.missing_panel_policy must be 'complete' or 'available'")
+    if config.data.target.aggregation not in {"avg_top_n", "min", "median", "softmin"}:
+        raise ConfigError(
+            "data.target.aggregation must be avg_top_n, min, median, or softmin"
+        )
+    if config.data.target.softmin_temperature <= 0:
+        raise ConfigError("data.target.softmin_temperature must be positive")
+    if (
+        config.data.target.aggregation != "avg_top_n"
+        and config.data.target.name.startswith("avg_top_")
+    ):
+        raise ConfigError(
+            "Use a distinct data.target.name for min, median, or softmin challengers"
+        )
     if any(top_n <= 0 for top_n in config.features.top_ns):
         raise ConfigError("features.top_ns must contain only positive integers")
     if config.split.strategy != "time":
@@ -275,6 +322,38 @@ def validate_config(config: PipelineConfig) -> None:
         raise ConfigError("Only regression objective is currently supported")
     if config.model.target_transform not in {"none", "log1p"}:
         raise ConfigError("model.target_transform must be 'none' or 'log1p'")
+    if config.model.backend == "catboost":
+        loss = config.model.catboost.loss_function.lower()
+        if "tweedie" in loss and "variance_power=2" in loss:
+            raise ConfigError("CatBoost Tweedie variance_power must be strictly between 1 and 2")
+        if config.model.export_onnx and config.data.categorical_columns:
+            raise ConfigError(
+                "CatBoost ONNX export does not support categorical model features; "
+                "use the sklearn backend or numeric-only features"
+            )
+    protected = {
+        config.data.own_premium_column,
+        config.data.conversion_column,
+        *config.data.competitor_columns,
+    }
+    configured_features = set(config.data.numeric_columns + config.data.categorical_columns)
+    forbidden = sorted(column for column in protected if column and column in configured_features)
+    if forbidden:
+        raise ConfigError(
+            "Post-offer or market-observed columns cannot be competitor-model features: "
+            + ", ".join(forbidden)
+        )
+    if config.historical_predictions.min_train_rows < 20:
+        raise ConfigError("historical_predictions.min_train_rows must be at least 20")
+    if config.historical_predictions.retrain_frequency != "MS":
+        raise ConfigError("Only monthly historical retraining (MS) is currently supported")
+    if config.historical_predictions.enabled and config.model.backend != "sklearn":
+        raise ConfigError(
+            "historical_predictions currently requires model.backend: sklearn so historical "
+            "and production anchors use the same estimator family"
+        )
+    if not (0 < config.demand_readiness.test_fraction < 0.5):
+        raise ConfigError("demand_readiness.test_fraction must be between 0 and 0.5")
 
 
 def resolve_project_path(path: str | Path, root_dir: Path | None = None) -> Path:

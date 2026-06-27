@@ -12,7 +12,10 @@ import pandas as pd
 from competitor_pricing_ai.basket import generate_basket_artefacts
 from competitor_pricing_ai.config import PipelineConfig, dump_resolved_config, load_config
 from competitor_pricing_ai.data import coerce_basic_types, load_configured_dataset, validate_input_data
+from competitor_pricing_ai.demand import evaluate_demand_readiness
 from competitor_pricing_ai.features import FeatureMetadata, engineer_market_features, select_model_features
+from competitor_pricing_ai.governance import write_run_manifest
+from competitor_pricing_ai.historical import save_historical_market_features
 from competitor_pricing_ai.metrics import lift_table
 from competitor_pricing_ai.models import train_individual_competitor_models, train_model
 from competitor_pricing_ai.reporting import build_qa_checklist, write_business_report, write_json
@@ -76,8 +79,6 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
             output_dir=output_dir,
         )
 
-    runtime_seconds = time.perf_counter() - start
-
     artifacts = save_training_artifacts(
         config=config,
         output_dir=output_dir,
@@ -90,6 +91,28 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
 
     artifacts["market_data"] = save_market_data(split, config, feature_metadata, output_dir)
 
+    historical_metadata = None
+    demand_readiness = None
+    if config.historical_predictions.enabled:
+        historical_path, historical_metadata = save_historical_market_features(
+            engineered,
+            config,
+            feature_columns,
+            categorical_columns,
+            numeric_columns,
+            output_dir,
+        )
+        artifacts["historical_market_features"] = historical_path
+        write_json(historical_metadata, output_dir / "historical_prediction_metadata.json")
+        artifacts["historical_prediction_metadata"] = str(
+            output_dir / "historical_prediction_metadata.json"
+        )
+        if config.demand_readiness.enabled:
+            historical_frame = pd.read_csv(historical_path)
+            demand_readiness = evaluate_demand_readiness(historical_frame, config)
+            write_json(demand_readiness, output_dir / "demand_readiness.json")
+            artifacts["demand_readiness"] = str(output_dir / "demand_readiness.json")
+
     try:
         artifacts.update(generate_basket_artefacts(training_result, split, config, output_dir))
     except Exception as exc:  # noqa: BLE001
@@ -99,6 +122,7 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
     if individual_results:
         artifacts.update(save_individual_competitor_artifacts(output_dir, individual_results))
 
+    runtime_seconds = time.perf_counter() - start
     qa_checklist = build_qa_checklist(
         config=config,
         data_quality=data_quality,
@@ -110,10 +134,59 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
         onnx_path=training_result.onnx_path,
         runtime_seconds=runtime_seconds,
     )
+    qa_checklist["checks"].append(
+        {
+            "name": "stable_competitor_panel",
+            "passed": config.data.target.missing_panel_policy == "complete",
+            "blocking": True,
+            "detail": config.data.target.missing_panel_policy,
+        }
+    )
+    comparability_missing = sum(data_quality.get("comparability_missing", {}).values())
+    qa_checklist["checks"].append(
+        {
+            "name": "premium_comparability_fields_complete",
+            "passed": comparability_missing == 0,
+            "blocking": True,
+            "detail": {
+                "premium_basis": config.data.premium_basis,
+                "premium_currency": config.data.premium_currency,
+                "missing_cells": comparability_missing,
+            },
+        }
+    )
+    if config.historical_predictions.enabled:
+        rows_scored = historical_metadata["rows_scored"] if historical_metadata else 0
+        qa_checklist["checks"].append(
+            {
+                "name": "rolling_origin_historical_anchors",
+                "passed": rows_scored > 0,
+                "blocking": True,
+                "detail": f"{rows_scored} historical rows scored without future observations",
+            }
+        )
+    if demand_readiness:
+        qa_checklist["checks"].append(
+            {
+                "name": "standalone_demand_signal",
+                "passed": bool(demand_readiness.get("passes_incremental_signal_check", False)),
+                "blocking": False,
+                "detail": demand_readiness.get("status"),
+            }
+        )
+    qa_checklist["overall_passed"] = all(
+        check["passed"] for check in qa_checklist["checks"] if check.get("blocking", True)
+    )
+    qa_checklist["human_review_required"] = any(
+        not check["passed"]
+        for check in qa_checklist["checks"]
+        if not check.get("blocking", True)
+    )
     write_json(qa_checklist, output_dir / "qa_checklist.json")
 
     artifacts["qa_checklist"] = str(output_dir / "qa_checklist.json")
     artifacts["business_report"] = str(output_dir / "business_report.md")
+    artifacts["run_manifest"] = str(output_dir / "run_manifest.json")
 
     write_business_report(
         output_path=output_dir / "business_report.md",
@@ -127,7 +200,11 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
         artifacts=artifacts,
         runtime_seconds=runtime_seconds,
         individual_results=individual_results or None,
+        historical_metadata=historical_metadata,
+        demand_readiness=demand_readiness,
     )
+
+    artifacts["run_manifest"] = write_run_manifest(config, artifacts, output_dir)
 
     return PipelineRunResult(
         output_dir=output_dir,
@@ -156,6 +233,7 @@ def save_training_artifacts(
     feature_importance_path = output_dir / "feature_importance.csv"
     model_features_path = output_dir / "model_features.json"
     config_path = output_dir / "run_config_resolved.yml"
+    onnx_parity_path = output_dir / "onnx_parity.json"
 
     write_json(training_result.metrics, metrics_path)
 
@@ -211,6 +289,7 @@ def save_training_artifacts(
         "reference_features": str(reference_path),
         "lift_table_test": str(lift_table_path),
         "run_config": str(config_path),
+        "onnx_parity": str(onnx_parity_path) if onnx_parity_path.exists() else None,
         **prediction_paths,
     }
 

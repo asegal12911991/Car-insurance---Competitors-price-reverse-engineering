@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -96,16 +97,27 @@ def train_sklearn_model(
     validation_x, validation_y = split.validation[feature_columns], split.validation[target_column]
     test_x, test_y = split.test[feature_columns], split.test[target_column]
 
-    pipeline.fit(train_x, train_y)
+    train_weight = get_sample_weight(split.train, config)
+    fit_kwargs = {}
+    if train_weight is not None:
+        weight_key = (
+            "regressor__model__sample_weight"
+            if isinstance(pipeline, TransformedTargetRegressor)
+            else "model__sample_weight"
+        )
+        fit_kwargs[weight_key] = train_weight
+    pipeline.fit(train_x, train_y, **fit_kwargs)
 
     validation_pred = pipeline.predict(validation_x)
     test_pred = pipeline.predict(test_x)
     train_pred = pipeline.predict(train_x)
 
     metrics = {
-        "train": regression_metrics(train_y, train_pred),
-        "validation": regression_metrics(validation_y, validation_pred),
-        "test": regression_metrics(test_y, test_pred),
+        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
+        "validation": regression_metrics(
+            validation_y, validation_pred, get_sample_weight(split.validation, config)
+        ),
+        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
     }
 
     feature_importance = calculate_permutation_importance(
@@ -124,6 +136,8 @@ def train_sklearn_model(
         "numeric_columns": numeric_columns,
         "target_column": target_column,
         "target_transform": config.model.target_transform,
+        "training_cutoff": str(split.train[config.data.date_column].max()),
+        "schema_version": "2.0",
     }
     model_path = output_dir / "model.joblib"
     joblib.dump(bundle, model_path)
@@ -131,6 +145,14 @@ def train_sklearn_model(
     onnx_path = None
     if config.model.export_onnx:
         onnx_path = export_sklearn_onnx(pipeline, feature_columns, categorical_columns, output_dir)
+        validate_onnx_parity(
+            pipeline,
+            onnx_path,
+            validation_x,
+            feature_columns,
+            categorical_columns,
+            output_dir,
+        )
 
     predictions = {
         "train": make_prediction_frame(split.train, target_column, train_pred, config),
@@ -196,6 +218,16 @@ def build_sklearn_pipeline(
     return Pipeline(steps=[("preprocess", preprocessor), ("model", estimator)])
 
 
+def get_sample_weight(frame: pd.DataFrame, config: PipelineConfig) -> np.ndarray | None:
+    column = config.data.weight_column
+    if not column or column not in frame:
+        return None
+    weight = pd.to_numeric(frame[column], errors="coerce").fillna(0).to_numpy(dtype=float)
+    if np.any(weight < 0) or not np.any(weight > 0):
+        raise ValueError("Model weights must be non-negative with at least one positive value")
+    return weight
+
+
 def export_sklearn_onnx(
     pipeline: Any,
     feature_columns: list[str],
@@ -223,6 +255,51 @@ def export_sklearn_onnx(
     with onnx_path.open("wb") as f:
         f.write(onnx_model.SerializeToString())
     return str(onnx_path)
+
+
+def validate_onnx_parity(
+    python_model: Any,
+    onnx_path: str | Path,
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    output_dir: Path,
+) -> dict[str, float | bool | int]:
+    """Fail the export when ONNX does not reproduce Python predictions."""
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("ONNX parity validation requires onnxruntime") from exc
+    sample = frame[feature_columns].head(min(500, len(frame))).copy()
+    feed = {}
+    categorical = set(categorical_columns)
+    for input_meta in ort.InferenceSession(str(onnx_path)).get_inputs():
+        values = sample[input_meta.name]
+        if input_meta.name in categorical:
+            feed[input_meta.name] = values.astype("string").fillna("").to_numpy(object).reshape(-1, 1)
+        else:
+            feed[input_meta.name] = pd.to_numeric(values, errors="coerce").to_numpy(
+                dtype=np.float32
+            ).reshape(-1, 1)
+    session = ort.InferenceSession(str(onnx_path))
+    onnx_prediction = np.asarray(session.run(None, feed)[0]).reshape(-1)
+    python_prediction = np.asarray(python_model.predict(sample)).reshape(-1)
+    difference = np.abs(onnx_prediction - python_prediction)
+    max_abs = float(np.max(difference))
+    max_relative = float(np.max(difference / np.maximum(np.abs(python_prediction), 1e-6)))
+    passed = bool(max_abs <= 1e-3 or max_relative <= 1e-5)
+    result = {
+        "passed": passed,
+        "rows": len(sample),
+        "max_absolute_difference": max_abs,
+        "max_relative_difference": max_relative,
+    }
+    (output_dir / "onnx_parity.json").write_text(
+        json.dumps(result, indent=2), encoding="utf-8"
+    )
+    if not passed:
+        raise RuntimeError(f"ONNX prediction parity failed: {result}")
+    return result
 
 
 def calculate_permutation_importance(
@@ -390,7 +467,7 @@ def train_catboost_model(
         split.test[target_column],
     )
 
-    cb = CatBoostConfig = config.model.catboost
+    cb = config.model.catboost
     model = CatBoostRegressor(
         loss_function=cb.loss_function,
         iterations=cb.iterations,
@@ -402,16 +479,24 @@ def train_catboost_model(
         early_stopping_rounds=cb.early_stopping_rounds,
         verbose=False,
     )
-    model.fit(train_x, train_y, eval_set=(val_x, val_y), use_best_model=True)
+    model.fit(
+        train_x,
+        train_y,
+        sample_weight=get_sample_weight(split.train, config),
+        eval_set=(val_x, val_y),
+        use_best_model=True,
+    )
 
     train_pred = model.predict(train_x)
     val_pred   = model.predict(val_x)
     test_pred  = model.predict(test_x)
 
     metrics = {
-        "train":      regression_metrics(train_y, train_pred),
-        "validation": regression_metrics(val_y, val_pred),
-        "test":       regression_metrics(test_y, test_pred),
+        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
+        "validation": regression_metrics(
+            val_y, val_pred, get_sample_weight(split.validation, config)
+        ),
+        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
     }
 
     importance = calculate_permutation_importance(model, split.validation, feature_columns, target_column, config)
@@ -423,7 +508,9 @@ def train_catboost_model(
     joblib.dump(
         {"model": model, "backend": "catboost", "feature_columns": feature_columns,
          "categorical_columns": categorical_columns, "numeric_columns": numeric_columns,
-         "target_column": target_column, "target_transform": "none"},
+         "target_column": target_column, "target_transform": "none",
+         "training_cutoff": str(split.train[config.data.date_column].max()),
+         "schema_version": "2.0"},
         bundle_path,
     )
 
@@ -512,6 +599,7 @@ def train_lightgbm_model(
     )
     model.fit(
         X_train, train_y,
+        sample_weight=get_sample_weight(split.train, config),
         eval_set=[(X_val, val_y)],
         callbacks=[
             lgb.early_stopping(lgb_cfg.early_stopping_rounds, verbose=False),
@@ -524,9 +612,11 @@ def train_lightgbm_model(
     test_pred  = model.predict(X_test)
 
     metrics = {
-        "train":      regression_metrics(train_y, train_pred),
-        "validation": regression_metrics(val_y, val_pred),
-        "test":       regression_metrics(test_y, test_pred),
+        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
+        "validation": regression_metrics(
+            val_y, val_pred, get_sample_weight(split.validation, config)
+        ),
+        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
     }
 
     wrapped = _WrappedLGBM(preprocessor, model)
@@ -539,7 +629,9 @@ def train_lightgbm_model(
         {"model": model, "preprocessor": preprocessor, "backend": "lightgbm",
          "feature_columns": feature_columns, "categorical_columns": categorical_columns,
          "numeric_columns": numeric_columns, "target_column": target_column,
-         "target_transform": "none"},
+         "target_transform": "none",
+         "training_cutoff": str(split.train[config.data.date_column].max()),
+         "schema_version": "2.0"},
         model_path,
     )
 

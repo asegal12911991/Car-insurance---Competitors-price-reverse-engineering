@@ -8,6 +8,7 @@ import sys
 from competitor_pricing_ai.config import ConfigError, load_config
 from competitor_pricing_ai.monitoring import run_monitoring
 from competitor_pricing_ai.pipeline import run_training_pipeline
+from competitor_pricing_ai.scoring import score_market_anchor
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +26,14 @@ def main(argv: list[str] | None = None) -> int:
 
     monitor_parser = subparsers.add_parser("monitor", help="Run drift and performance monitoring")
     monitor_parser.add_argument("--config", required=True, help="Path to YAML configuration")
+
+    score_parser = subparsers.add_parser(
+        "score", help="Create frozen market-anchor features for a quote batch"
+    )
+    score_parser.add_argument("--config", required=True, help="Path to YAML configuration")
+    score_parser.add_argument("--input", required=True, help="CSV, Parquet, or Excel quote file")
+    score_parser.add_argument("--output", required=True, help="Destination CSV")
+    score_parser.add_argument("--model", default=None, help="Optional model.joblib path")
 
     args = parser.parse_args(argv)
 
@@ -56,6 +65,13 @@ def main(argv: list[str] | None = None) -> int:
                 "Retrain recommended: "
                 f"{metrics['refresh_recommendation']['retrain_recommended']}"
             )
+            return 0
+
+        if args.command == "score":
+            path = score_market_anchor(
+                args.config, args.input, args.output, model_path=args.model
+            )
+            print(f"Scoring complete. Output: {path}")
             return 0
 
     except (ConfigError, ValueError, RuntimeError) as exc:

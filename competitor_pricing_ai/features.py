@@ -16,6 +16,8 @@ TARGET_DERIVED_PREFIXES = (
     "avg_top_",
     "min_competitor",
     "max_competitor",
+    "median_competitor",
+    "softmin_competitor",
     "competitor_premium_",
     "market_price_index",
     "own_to_",
@@ -64,26 +66,44 @@ def engineer_market_features(
     for top_n in top_ns:
         column = f"avg_top_{top_n}_competitor_premium"
         engineered[column] = row_top_n_mean(competitor_prices, top_n)
+        if config.data.target.missing_panel_policy == "complete":
+            engineered.loc[competitor_prices.isna().any(axis=1), column] = np.nan
         market_columns.append(column)
 
-    target_column = config.data.target.name
     canonical_target = f"avg_top_{config.data.target.top_n}_competitor_premium"
-    if target_column not in engineered.columns:
-        engineered[target_column] = engineered[canonical_target]
-        if target_column not in market_columns:
-            market_columns.append(target_column)
+    target_column = config.data.target.name
+    target_values = {
+        "avg_top_n": engineered[canonical_target],
+        "min": competitor_prices.min(axis=1, skipna=True),
+        "median": competitor_prices.median(axis=1, skipna=True),
+        "softmin": row_softmin(
+            competitor_prices, config.data.target.softmin_temperature
+        ),
+    }[config.data.target.aggregation]
+    engineered[target_column] = target_values
+    if config.data.target.missing_panel_policy == "complete":
+        engineered.loc[competitor_prices.isna().any(axis=1), target_column] = np.nan
+    if target_column not in market_columns:
+        market_columns.append(target_column)
 
     if config.features.add_competitor_distribution:
         distribution = {
             "min_competitor_premium": competitor_prices.min(axis=1, skipna=True),
             "max_competitor_premium": competitor_prices.max(axis=1, skipna=True),
+            "median_competitor_premium": competitor_prices.median(axis=1, skipna=True),
+            "softmin_competitor_premium": row_softmin(
+                competitor_prices, config.data.target.softmin_temperature
+            ),
             "competitor_premium_std": competitor_prices.std(axis=1, skipna=True),
             "competitor_count": competitor_prices.notna().sum(axis=1),
         }
         for column, values in distribution.items():
             engineered[column] = values
             market_columns.append(column)
-        engineered["market_price_index"] = engineered[target_column] / engineered[target_column].median()
+        target_median = engineered[target_column].dropna().median()
+        engineered["market_price_index"] = (
+            engineered[target_column] / target_median if pd.notna(target_median) else np.nan
+        )
         market_columns.append("market_price_index")
 
     if config.features.add_relative_position and config.data.own_premium_column:
@@ -142,9 +162,26 @@ def row_top_n_mean(values: pd.DataFrame, top_n: int) -> pd.Series:
     valid_counts = np.sum(~np.isnan(arr), axis=1)
     sorted_values = np.sort(arr, axis=1)
     top_slice = sorted_values[:, :top_n]
-    means = np.nanmean(top_slice, axis=1)
+    means = np.nansum(top_slice, axis=1) / np.maximum(
+        np.sum(~np.isnan(top_slice), axis=1), 1
+    )
     means[valid_counts < top_n] = np.nan
     return pd.Series(means, index=values.index)
+
+
+def row_softmin(values: pd.DataFrame, temperature: float) -> pd.Series:
+    """Smooth minimum, approaching the minimum as temperature approaches zero."""
+    arr = values.to_numpy(dtype=float)
+    all_missing = np.all(np.isnan(arr), axis=1)
+    minimum = np.min(np.where(np.isnan(arr), np.inf, arr), axis=1)
+    safe_minimum = np.where(all_missing, 0.0, minimum)
+    shifted = np.exp(-(arr - safe_minimum[:, None]) / temperature)
+    mean_shifted = np.nansum(shifted, axis=1) / np.maximum(
+        np.sum(~np.isnan(shifted), axis=1), 1
+    )
+    result = safe_minimum - temperature * np.log(np.maximum(mean_shifted, 1e-12))
+    result[all_missing] = np.nan
+    return pd.Series(result, index=values.index)
 
 
 def safe_divide(numerator: pd.Series, denominator: pd.Series | None) -> pd.Series:
@@ -168,6 +205,11 @@ def add_temporal_features(df: pd.DataFrame, date_column: str) -> list[str]:
         "quote_quarter": dates.dt.quarter,
         "quote_weekofyear": dates.dt.isocalendar().week.astype("Int64"),
         "quote_dayofweek": dates.dt.dayofweek,
+        "quote_time_days": (dates - pd.Timestamp("2000-01-01")).dt.days,
+        "quote_month_sin": np.sin(2 * np.pi * dates.dt.month / 12),
+        "quote_month_cos": np.cos(2 * np.pi * dates.dt.month / 12),
+        "quote_dayofweek_sin": np.sin(2 * np.pi * dates.dt.dayofweek / 7),
+        "quote_dayofweek_cos": np.cos(2 * np.pi * dates.dt.dayofweek / 7),
     }
     for column, values in created.items():
         df[column] = values
@@ -183,8 +225,12 @@ def select_model_features(
     excluded.update(metadata.market_component_columns)
     excluded.add(metadata.target_column)
     excluded.add(config.data.date_column)
+    if config.data.own_premium_column:
+        excluded.add(config.data.own_premium_column)
     if config.data.conversion_column:
         excluded.add(config.data.conversion_column)
+    if config.data.weight_column:
+        excluded.add(config.data.weight_column)
 
     categorical = [
         column

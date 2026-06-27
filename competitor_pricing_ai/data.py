@@ -53,10 +53,13 @@ def validate_input_data(df: pd.DataFrame, config: PipelineConfig) -> dict[str, A
     required.extend(config.data.id_columns)
     required.extend(config.data.categorical_columns)
     required.extend(config.data.numeric_columns)
+    required.extend(config.data.comparability_columns)
     if config.data.own_premium_column:
         required.append(config.data.own_premium_column)
     if config.data.conversion_column:
         required.append(config.data.conversion_column)
+    if config.data.weight_column:
+        required.append(config.data.weight_column)
     required.extend(config.data.competitor_columns)
 
     missing_required = sorted(set(required) - set(df.columns))
@@ -81,8 +84,14 @@ def validate_input_data(df: pd.DataFrame, config: PipelineConfig) -> dict[str, A
     non_positive = int((competitor_numeric <= 0).sum().sum())
     missing_comp_prices = int(competitor_numeric.isna().sum().sum())
     complete_rows = int(competitor_numeric.notna().sum(axis=1).ge(config.data.target.top_n).sum())
+    fixed_panel_rows = int(competitor_numeric.notna().all(axis=1).sum())
+    target_eligible_rows = (
+        fixed_panel_rows
+        if config.data.target.missing_panel_policy == "complete"
+        else complete_rows
+    )
 
-    if complete_rows == 0:
+    if target_eligible_rows == 0:
         raise DataContractError(
             "No rows have enough competitor prices to calculate the configured target"
         )
@@ -93,9 +102,23 @@ def validate_input_data(df: pd.DataFrame, config: PipelineConfig) -> dict[str, A
         "date_min": str(date_series.min().date()),
         "date_max": str(date_series.max().date()),
         "competitor_columns": competitor_columns,
+        "competitor_quote_rates": {
+            column: float(competitor_numeric[column].gt(0).mean())
+            for column in competitor_columns
+        },
         "missing_competitor_price_cells": missing_comp_prices,
         "non_positive_competitor_price_cells": non_positive,
         "rows_with_enough_competitors": complete_rows,
+        "rows_with_complete_competitor_panel": fixed_panel_rows,
+        "rows_eligible_for_target": target_eligible_rows,
+        "target_missing_panel_policy": config.data.target.missing_panel_policy,
+        "comparability_missing": {
+            column: int(df[column].isna().sum())
+            for column in config.data.comparability_columns
+            if column in df.columns
+        },
+        "premium_basis": config.data.premium_basis,
+        "premium_currency": config.data.premium_currency,
     }
 
 
@@ -109,6 +132,8 @@ def coerce_basic_types(df: pd.DataFrame, config: PipelineConfig) -> pd.DataFrame
         numeric_candidates.add(config.data.own_premium_column)
     if config.data.conversion_column and config.data.conversion_column in typed.columns:
         numeric_candidates.add(config.data.conversion_column)
+    if config.data.weight_column and config.data.weight_column in typed.columns:
+        numeric_candidates.add(config.data.weight_column)
 
     for column in numeric_candidates:
         if column in typed.columns:
