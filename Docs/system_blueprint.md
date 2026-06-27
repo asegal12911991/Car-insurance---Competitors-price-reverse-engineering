@@ -277,6 +277,12 @@ Writes `monitoring_metrics.json` (structured drift and performance data) and `mo
 | Gini drop | > 0.05 |
 | MAPE increase | > 3% |
 
+Each comparison requires the metric to be present in both the baseline `metrics.json` and the
+current performance snapshot. If a metric is missing from one side (e.g. an older `metrics.json`
+predating a metric addition), that specific comparison is skipped rather than silently treated as
+zero drift — except D², the primary deployment gate, where an unavailable baseline itself raises a
+retrain flag so a stale or incomplete metrics.json cannot mask real degradation.
+
 ---
 
 ## Dashboard (`scripts/dashboard.py`)

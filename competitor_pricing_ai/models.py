@@ -72,6 +72,46 @@ def train_model(
     )
 
 
+def _split_metrics(
+    split: SplitResult,
+    target_column: str,
+    train_pred: np.ndarray,
+    validation_pred: np.ndarray,
+    test_pred: np.ndarray,
+    config: PipelineConfig,
+) -> dict[str, dict[str, float]]:
+    """Compute train/validation/test regression_metrics for a fitted model's predictions."""
+    return {
+        "train": regression_metrics(
+            split.train[target_column], train_pred, get_sample_weight(split.train, config)
+        ),
+        "validation": regression_metrics(
+            split.validation[target_column],
+            validation_pred,
+            get_sample_weight(split.validation, config),
+        ),
+        "test": regression_metrics(
+            split.test[target_column], test_pred, get_sample_weight(split.test, config)
+        ),
+    }
+
+
+def _split_prediction_frames(
+    split: SplitResult,
+    target_column: str,
+    train_pred: np.ndarray,
+    validation_pred: np.ndarray,
+    test_pred: np.ndarray,
+    config: PipelineConfig,
+) -> dict[str, pd.DataFrame]:
+    """Build the train/validation/test prediction frames shared across all backends."""
+    return {
+        "train": make_prediction_frame(split.train, target_column, train_pred, config),
+        "validation": make_prediction_frame(split.validation, target_column, validation_pred, config),
+        "test": make_prediction_frame(split.test, target_column, test_pred, config),
+    }
+
+
 def train_sklearn_model(
     split: SplitResult,
     config: PipelineConfig,
@@ -94,8 +134,8 @@ def train_sklearn_model(
         )
 
     train_x, train_y = split.train[feature_columns], split.train[target_column]
-    validation_x, validation_y = split.validation[feature_columns], split.validation[target_column]
-    test_x, test_y = split.test[feature_columns], split.test[target_column]
+    validation_x = split.validation[feature_columns]
+    test_x = split.test[feature_columns]
 
     train_weight = get_training_weight(
         split.train, config, as_of_date=split.train[config.data.date_column].max()
@@ -114,13 +154,7 @@ def train_sklearn_model(
     test_pred = pipeline.predict(test_x)
     train_pred = pipeline.predict(train_x)
 
-    metrics = {
-        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
-        "validation": regression_metrics(
-            validation_y, validation_pred, get_sample_weight(split.validation, config)
-        ),
-        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
-    }
+    metrics = _split_metrics(split, target_column, train_pred, validation_pred, test_pred, config)
 
     feature_importance = calculate_permutation_importance(
         pipeline,
@@ -143,7 +177,6 @@ def train_sklearn_model(
     }
     model_path = output_dir / "model.joblib"
     joblib.dump(bundle, model_path)
-# Commit test
     onnx_path = None
     if config.model.export_onnx:
         onnx_path = export_sklearn_onnx(pipeline, feature_columns, categorical_columns, output_dir)
@@ -156,11 +189,9 @@ def train_sklearn_model(
             output_dir,
         )
 
-    predictions = {
-        "train": make_prediction_frame(split.train, target_column, train_pred, config),
-        "validation": make_prediction_frame(split.validation, target_column, validation_pred, config),
-        "test": make_prediction_frame(split.test, target_column, test_pred, config),
-    }
+    predictions = _split_prediction_frames(
+        split, target_column, train_pred, validation_pred, test_pred, config
+    )
 
     return ModelTrainingResult(
         backend="sklearn",
@@ -573,11 +604,7 @@ def train_catboost_model(
     train_x = split.train[feature_columns]
     val_x   = split.validation[feature_columns]
     test_x  = split.test[feature_columns]
-    train_y, val_y, test_y = (
-        split.train[target_column],
-        split.validation[target_column],
-        split.test[target_column],
-    )
+    train_y, val_y = split.train[target_column], split.validation[target_column]
 
     cb = config.model.catboost
     model = CatBoostRegressor(
@@ -605,13 +632,7 @@ def train_catboost_model(
     val_pred   = model.predict(val_x)
     test_pred  = model.predict(test_x)
 
-    metrics = {
-        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
-        "validation": regression_metrics(
-            val_y, val_pred, get_sample_weight(split.validation, config)
-        ),
-        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
-    }
+    metrics = _split_metrics(split, target_column, train_pred, val_pred, test_pred, config)
 
     importance = calculate_permutation_importance(model, split.validation, feature_columns, target_column, config)
 
@@ -634,11 +655,7 @@ def train_catboost_model(
         model.save_model(str(onnx_p), format="onnx")  # CatBoost native ONNX export
         onnx_path = str(onnx_p)
 
-    predictions = {
-        "train":      make_prediction_frame(split.train,      target_column, train_pred, config),
-        "validation": make_prediction_frame(split.validation, target_column, val_pred,   config),
-        "test":       make_prediction_frame(split.test,       target_column, test_pred,  config),
-    }
+    predictions = _split_prediction_frames(split, target_column, train_pred, val_pred, test_pred, config)
 
     return ModelTrainingResult(
         backend="catboost",
@@ -695,11 +712,8 @@ def train_lightgbm_model(
     X_train = preprocessor.transform(split.train[feature_columns])
     X_val   = preprocessor.transform(split.validation[feature_columns])
     X_test  = preprocessor.transform(split.test[feature_columns])
-    train_y, val_y, test_y = (
-        split.train[target_column].to_numpy(),
-        split.validation[target_column].to_numpy(),
-        split.test[target_column].to_numpy(),
-    )
+    train_y = split.train[target_column].to_numpy()
+    val_y = split.validation[target_column].to_numpy()
 
     lgb_cfg = config.model.lightgbm
     model = lgb.LGBMRegressor(
@@ -727,13 +741,7 @@ def train_lightgbm_model(
     val_pred   = model.predict(X_val)
     test_pred  = model.predict(X_test)
 
-    metrics = {
-        "train": regression_metrics(train_y, train_pred, get_sample_weight(split.train, config)),
-        "validation": regression_metrics(
-            val_y, val_pred, get_sample_weight(split.validation, config)
-        ),
-        "test": regression_metrics(test_y, test_pred, get_sample_weight(split.test, config)),
-    }
+    metrics = _split_metrics(split, target_column, train_pred, val_pred, test_pred, config)
 
     wrapped = _WrappedLGBM(preprocessor, model)
     importance = calculate_permutation_importance(
@@ -751,11 +759,7 @@ def train_lightgbm_model(
         model_path,
     )
 
-    predictions = {
-        "train":      make_prediction_frame(split.train,      target_column, train_pred, config),
-        "validation": make_prediction_frame(split.validation, target_column, val_pred,   config),
-        "test":       make_prediction_frame(split.test,       target_column, test_pred,  config),
-    }
+    predictions = _split_prediction_frames(split, target_column, train_pred, val_pred, test_pred, config)
 
     return ModelTrainingResult(
         backend="lightgbm",
@@ -782,6 +786,12 @@ def predict_with_sklearn_bundle(bundle: dict[str, Any], frame: pd.DataFrame) -> 
 
 
 def predict_with_bundle(bundle: dict[str, Any], frame: pd.DataFrame) -> np.ndarray:
+    missing = [column for column in bundle["feature_columns"] if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"Scoring frame is missing model feature columns: {missing}. "
+            "Re-run feature engineering before scoring this bundle."
+        )
     X = frame[bundle["feature_columns"]]
     if bundle.get("backend") == "lightgbm" and "preprocessor" in bundle:
         return bundle["model"].predict(bundle["preprocessor"].transform(X))
@@ -835,6 +845,7 @@ def train_h2o_model(
     validation_pred = h2o_predict(model, validation_hf)
     test_pred = h2o_predict(model, test_hf)
 
+    # H2O backend does not currently apply config.data.weight_column to evaluation metrics.
     metrics = {
         "train": regression_metrics(split.train[target_column], train_pred),
         "validation": regression_metrics(split.validation[target_column], validation_pred),
@@ -861,11 +872,9 @@ def train_h2o_model(
     if config.model.h2o.export_mojo:
         mojo_path = model.download_mojo(path=str(output_dir), get_genmodel_jar=False)
 
-    predictions = {
-        "train": make_prediction_frame(split.train, target_column, train_pred, config),
-        "validation": make_prediction_frame(split.validation, target_column, validation_pred, config),
-        "test": make_prediction_frame(split.test, target_column, test_pred, config),
-    }
+    predictions = _split_prediction_frames(
+        split, target_column, train_pred, validation_pred, test_pred, config
+    )
 
     return ModelTrainingResult(
         backend="h2o",

@@ -74,7 +74,9 @@ All outputs land in `output/<run_name>/` as configured by `project.output_dir`.
 
 **Gamma/Tweedie loss across all backends.** Insurance premiums are positive and right-skewed. All four backends use Gamma or Tweedie loss. D² (Gamma deviance explained) is the primary deployment gate, not R².
 
-**Model serialisation.** `model.joblib` is a dict `{model, backend, feature_columns, categorical_columns, numeric_columns, target_column, target_transform}`, not a bare model object. `monitoring.py` and `basket.py` use `load_sklearn_bundle()` / `predict_with_bundle()` from `models.py` to score saved models — never unpickle and call `.predict()` directly.
+**Model serialisation.** `model.joblib` is a dict `{model, backend, feature_columns, categorical_columns, numeric_columns, target_column, target_transform}`, not a bare model object. `monitoring.py` and `basket.py` use `load_sklearn_bundle()` / `predict_with_bundle()` from `models.py` to score saved models — never unpickle and call `.predict()` directly. `predict_with_bundle()` raises a `ValueError` naming the missing columns if the scoring frame doesn't have every `feature_columns` entry, rather than a raw `KeyError`.
+
+**Shared backend helpers.** The four `train_*_model()` functions in `models.py` each fit/predict differently (sklearn pipeline, CatBoost native categoricals, LightGBM + external preprocessor, H2O frames) but converge on the same train/validation/test metrics and prediction-frame shape. That common tail is factored into `_split_metrics()` and `_split_prediction_frames()` — extend those instead of re-duplicating the block when adding a backend or changing what's reported per split.
 
 **Frozen market-anchor contract.** Own premium, conversion, competitor observations, IDs,
 weights, and target-derived fields are hard-excluded from competitor-model predictors.

@@ -234,22 +234,31 @@ def build_refresh_recommendation(
     if current_performance and training_metrics_path.exists():
         training_metrics = json.loads(training_metrics_path.read_text(encoding="utf-8"))
         test_metrics = training_metrics.get("test", {})
-        # D² drop (falls back to R² for old metrics.json without d2 key)
-        baseline_d2 = test_metrics.get("d2", test_metrics.get("r2", current_performance.get("d2", current_performance.get("r2", 0.0))))
-        current_d2 = current_performance.get("d2", current_performance.get("r2", 0.0))
-        d2_drop = baseline_d2 - current_d2
-        rmse_increase = current_performance["rmse"] - test_metrics.get(
-            "rmse", current_performance["rmse"]
-        )
-        gini_drop = test_metrics.get("gini", current_performance.get("gini", 0.0)) - current_performance.get("gini", 0.0)
-        mape_increase = current_performance.get("mape", 0.0) - test_metrics.get("mape", current_performance.get("mape", 0.0))
-        if d2_drop >= config.monitoring.performance_d2_drop_threshold:
+
+        def _drop(key: str, *, increase: bool = False) -> float | None:
+            # Only compare when both baseline and current have the metric. Falling back to
+            # the current value on a missing baseline would silently compare a metric to
+            # itself (drop == 0), masking real degradation instead of flagging "unknown".
+            if key not in test_metrics or key not in current_performance:
+                return None
+            baseline = test_metrics[key]
+            current = current_performance[key]
+            return (current - baseline) if increase else (baseline - current)
+
+        d2_drop = _drop("d2")
+        rmse_increase = _drop("rmse", increase=True)
+        gini_drop = _drop("gini")
+        mape_increase = _drop("mape", increase=True)
+
+        if d2_drop is None:
+            reasons.append("D² unavailable in baseline or current metrics; cannot evaluate drift")
+        elif d2_drop >= config.monitoring.performance_d2_drop_threshold:
             reasons.append(f"D² dropped by {d2_drop:.4f}")
-        if rmse_increase >= config.monitoring.performance_rmse_increase_threshold:
+        if rmse_increase is not None and rmse_increase >= config.monitoring.performance_rmse_increase_threshold:
             reasons.append(f"RMSE increased by {rmse_increase:.2f}")
-        if gini_drop >= config.monitoring.performance_gini_drop_threshold:
+        if gini_drop is not None and gini_drop >= config.monitoring.performance_gini_drop_threshold:
             reasons.append(f"Gini dropped by {gini_drop:.4f}")
-        if mape_increase >= config.monitoring.performance_mape_increase_threshold:
+        if mape_increase is not None and mape_increase >= config.monitoring.performance_mape_increase_threshold:
             reasons.append(f"MAPE increased by {mape_increase:.2f}%")
 
     return {
