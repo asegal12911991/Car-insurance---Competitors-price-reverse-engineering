@@ -6,7 +6,7 @@ Reverse engineer competitor pricing strategies from observed market quotes and
 convert the output into actionable, data-driven pricing decisions for car insurance.
 
 The primary deliverable is a leakage-safe, frozen `market_anchor` input for a separately
-governed demand model and optimisation process. This project has no direct Earnix dependency;
+governed demand model and optimisation process. This project has no external platform dependency;
 it produces historical and batch-scored handoff files plus optional ONNX artifacts.
 
 ---
@@ -24,7 +24,7 @@ it produces historical and batch-scored handoff files plus optional ONNX artifac
 | Individual competitor models | Optional per-competitor sklearn models to predict each competitor's price separately, enabling exact own-price rank computation |
 | Business intelligence reporting | `business_report.md` with model performance, QA status, feature drivers, and governance notes |
 | Monitoring | PSI-based feature drift detection and performance degradation alerts against configured thresholds |
-| Interactive dashboard | 7-tab Streamlit application covering market overview through raw-data profile exploration |
+| Interactive dashboard | 8-tab Streamlit application covering market analysis, profile exploration, and demand handoff |
 | Demand-model handoff | Rolling-origin historical anchors, frozen relative-price fields, batch scoring, provenance hashes |
 
 ## Downstream Acceptance Boundary
@@ -97,7 +97,7 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
 
 ---
 
-## Dashboard — 7 Tabs
+## Dashboard — 8 Tabs
 
 ### Tab 1 · Market Overview
 *High-level market position at a glance.*
@@ -166,6 +166,16 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
 - Conversion rate over time
 - Missing quote rate by competitor
 - Monthly summary table (expandable)
+
+### Tab 8 · Demand Handoff
+*Operational bridge from competitor modelling to a separate demand workflow.*
+
+- Historical rolling-origin anchor coverage and warm-up visibility
+- Baseline versus market-anchor demand diagnostic
+- Actual target versus prior-period market anchor over time
+- Relative-price distribution and observed conversion by band
+- Run-manifest hash verification and QA gate details
+- Filtered historical handoff CSV export
 
 ---
 

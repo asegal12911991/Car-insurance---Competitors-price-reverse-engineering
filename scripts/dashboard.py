@@ -9,6 +9,7 @@ Pass a specific run directory on the command line:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -110,7 +111,13 @@ def load_run(output_dir_str: str) -> dict:
     jload("lift_table_test.json", "lift_table")
     jload("tuning_results.json", "tuning_results")
     jload("model_features.json", "model_features")
+    jload("qa_checklist.json", "qa_checklist")
+    jload("historical_prediction_metadata.json", "historical_metadata")
+    jload("demand_readiness.json", "demand_readiness")
+    jload("monitoring_metrics.json", "monitoring")
+    jload("run_manifest.json", "run_manifest")
     cload("reference_basket_index.csv", "basket_index")
+    cload("historical_market_features.csv", "historical_market")
 
     yml_p = output_dir / "run_config_resolved.yml"
     if yml_p.exists():
@@ -122,6 +129,20 @@ def load_run(output_dir_str: str) -> dict:
     cload("predictions_test.csv", "pred_test")
     cload("reference_features.csv", "reference")
     cload("feature_importance.csv", "feature_importance")
+
+    manifest = d.get("run_manifest", {})
+    integrity_rows = []
+    for name, record in manifest.get("artifacts", {}).items():
+        path = Path(record.get("path", ""))
+        if not path.exists():
+            integrity_rows.append({"artifact": name, "status": "missing"})
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        integrity_rows.append({
+            "artifact": name,
+            "status": "verified" if digest == record.get("sha256") else "hash mismatch",
+        })
+    d["manifest_integrity"] = integrity_rows
 
     # Resolve key metadata
     d["competitor_columns"] = (
@@ -337,6 +358,7 @@ pred_train_f  = apply_filters(data.get("pred_train"),  splits=None, **_fkw) if "
 pred_val_f    = apply_filters(data.get("pred_val"),    splits=None, **_fkw) if "validation" in selected_splits else None
 pred_test_f   = apply_filters(data.get("pred_test"),   splits=None, **_fkw) if "test"       in selected_splits else None
 reference_f   = apply_filters(data.get("reference"),   splits=None, **_fkw)
+historical_f  = apply_filters(data.get("historical_market"), splits=None, **_fkw)
 
 target_col    = data["target_column"]
 own_col       = data["own_premium_column"]
@@ -346,7 +368,7 @@ conv_col      = data["conversion_column"]
 # Tabs
 # ──────────────────────────────────────────────────────────────────────
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "1 · Market Overview",
     "2 · Competitor-Level",
     "3 · Market Components",
@@ -354,6 +376,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "5 · Monitoring",
     "6 · Pricing Action",
     "7 · Profile Explorer",
+    "8 · Demand Handoff",
 ])
 
 # ══════════════════════════════════════════════════════════════════════
@@ -935,6 +958,7 @@ with tab4:
 with tab5:
     metrics = data.get("metrics")
     dq = data.get("data_quality", {})
+    monitoring = data.get("monitoring", {})
 
     # Data quality KPIs
     if dq:
@@ -945,6 +969,42 @@ with tab5:
                       f"{dq.get('rows_with_enough_competitors', '?'):,}")
         kpi[2].metric("Date min", str(dq.get("date_min", "?")))
         kpi[3].metric("Date max", str(dq.get("date_max", "?")))
+        st.divider()
+
+    if monitoring:
+        recommendation = monitoring.get("refresh_recommendation", {})
+        if recommendation.get("retrain_recommended"):
+            st.warning("Refresh review triggered: " + "; ".join(recommendation.get("reasons", [])))
+        else:
+            st.success("No configured refresh trigger is currently exceeded.")
+
+        health = monitoring.get("market_health", {})
+        health_cols = st.columns(4)
+        complete_rate = health.get("complete_panel_rate")
+        target_rate = health.get("target_available_rate")
+        bias = health.get("mean_anchor_bias_pct")
+        horizon = health.get("prediction_horizon_days")
+        health_cols[0].metric(
+            "Complete panel rate",
+            f"{complete_rate:.1%}" if complete_rate is not None else "—",
+        )
+        health_cols[1].metric(
+            "Target availability",
+            f"{target_rate:.1%}" if target_rate is not None else "—",
+        )
+        health_cols[2].metric(
+            "Current anchor bias",
+            f"{bias:+.2f}%" if bias is not None else "—",
+        )
+        health_cols[3].metric(
+            "Prediction horizon",
+            f"{horizon} days" if horizon is not None else "—",
+        )
+
+        drift_rows = monitoring.get("drift", [])
+        if drift_rows:
+            with st.expander("Current feature-drift details"):
+                st.dataframe(pd.DataFrame(drift_rows), width="stretch", hide_index=True)
         st.divider()
 
     col_a, col_b = st.columns(2)
@@ -1281,3 +1341,171 @@ with tab7:
                     tbl["n_quotes"] = seg.groupby("_month").size()
                     tbl.index = tbl.index.strftime("%Y-%m")
                     st.dataframe(tbl, use_container_width=True)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 8 — Demand-model handoff and governance
+# ══════════════════════════════════════════════════════════════════════
+with tab8:
+    st.caption(
+        "Standalone handoff view. The market anchor is fixed while a downstream process "
+        "varies candidate own premium."
+    )
+
+    historical_meta = data.get("historical_metadata", {})
+    demand = data.get("demand_readiness", {})
+    total_rows = historical_meta.get("rows_total", 0)
+    scored_rows = historical_meta.get("rows_scored", 0)
+    coverage = scored_rows / total_rows if total_rows else 0.0
+    log_loss_gain = demand.get("incremental_log_loss_improvement")
+
+    kpi = st.columns(4)
+    kpi[0].metric("Historical anchor coverage", f"{coverage:.1%}")
+    kpi[1].metric("Rows with prior-period anchor", f"{scored_rows:,}")
+    kpi[2].metric(
+        "Demand log-loss improvement",
+        f"{log_loss_gain:.5f}" if log_loss_gain is not None else "Not available",
+    )
+    kpi[3].metric(
+        "Incremental signal check",
+        "Pass" if demand.get("passes_incremental_signal_check") else "Review",
+    )
+
+    if demand.get("status") == "diagnostic_only":
+        st.info(
+            "This diagnostic tests incremental out-of-time signal only. It does not approve "
+            "elasticity, profitability, or optimized prices."
+        )
+        comparison = []
+        for label, key in [("Baseline", "baseline"), ("With market anchor", "with_market_anchor")]:
+            row = demand.get(key, {})
+            comparison.append({
+                "Model": label,
+                "Log loss": row.get("log_loss"),
+                "Brier": row.get("brier"),
+                "AUC": row.get("auc"),
+                "Calibration bias": row.get("calibration_bias"),
+            })
+        st.dataframe(pd.DataFrame(comparison).set_index("Model").round(5), width="stretch")
+    else:
+        no_data("Demand-readiness diagnostic is not available for this run.")
+
+    st.divider()
+    col_a, col_b = st.columns(2)
+    if historical_f is not None and "market_anchor" in historical_f.columns:
+        history = add_month(historical_f, date_col)
+
+        with col_a:
+            available_prices = [
+                column for column in [target_col, "market_anchor"] if column in history.columns
+            ]
+            if available_prices:
+                monthly = (
+                    history.groupby("_month")[available_prices]
+                    .mean()
+                    .reset_index()
+                    .melt("_month", var_name="Series", value_name="Premium")
+                )
+                fig = px.line(
+                    monthly,
+                    x="_month",
+                    y="Premium",
+                    color="Series",
+                    markers=True,
+                    title="Historical Actual vs Prior-Period Market Anchor",
+                    labels={"_month": ""},
+                )
+                st.plotly_chart(fig, width="stretch")
+
+        with col_b:
+            monthly_coverage = (
+                history.groupby("_month")["market_anchor"]
+                .apply(lambda series: series.notna().mean() * 100)
+                .reset_index(name="coverage_pct")
+            )
+            fig = px.bar(
+                monthly_coverage,
+                x="_month",
+                y="coverage_pct",
+                title="Leakage-Safe Anchor Coverage by Month",
+                labels={"_month": "", "coverage_pct": "Coverage (%)"},
+            )
+            fig.update_yaxes(range=[0, 105])
+            st.plotly_chart(fig, width="stretch")
+
+        col_c, col_d = st.columns(2)
+        with col_c:
+            if "log_relative_price" in history.columns:
+                fig = px.histogram(
+                    history.dropna(subset=["log_relative_price"]),
+                    x="log_relative_price",
+                    nbins=40,
+                    title="Log Relative-Price Distribution",
+                    labels={"log_relative_price": "log(own premium / market anchor)"},
+                )
+                fig.add_vline(x=0, line_dash="dash", line_color="grey")
+                st.plotly_chart(fig, width="stretch")
+
+        with col_d:
+            if conv_col and conv_col in history.columns and "log_relative_price" in history.columns:
+                elasticity_view = history.dropna(subset=[conv_col, "log_relative_price"]).copy()
+                if len(elasticity_view) >= 20:
+                    elasticity_view["Relative-price band"] = pd.qcut(
+                        elasticity_view["log_relative_price"],
+                        q=min(10, elasticity_view["log_relative_price"].nunique()),
+                        duplicates="drop",
+                    ).astype(str)
+                    conversion_by_band = (
+                        elasticity_view.groupby("Relative-price band", observed=True)[conv_col]
+                        .mean()
+                        .reset_index()
+                    )
+                    fig = px.bar(
+                        conversion_by_band,
+                        x="Relative-price band",
+                        y=conv_col,
+                        title="Observed Conversion by Relative-Price Band",
+                        labels={conv_col: "Conversion rate"},
+                    )
+                    fig.update_xaxes(tickangle=35)
+                    st.plotly_chart(fig, width="stretch")
+
+        st.download_button(
+            "Download filtered historical handoff CSV",
+            data=historical_f.to_csv(index=False).encode("utf-8"),
+            file_name="historical_market_features_filtered.csv",
+            mime="text/csv",
+        )
+    else:
+        no_data("historical_market_features.csv not found. Re-run the training pipeline.")
+
+    st.divider()
+    st.subheader("Artifact Governance")
+    integrity = pd.DataFrame(data.get("manifest_integrity", []))
+    manifest = data.get("run_manifest", {})
+    if integrity.empty:
+        no_data("Run manifest not available.")
+    else:
+        failures = integrity[integrity["status"] != "verified"]
+        if failures.empty:
+            st.success(f"All {len(integrity)} listed artifacts passed hash verification.")
+        else:
+            st.error(f"{len(failures)} artifact integrity checks require review.")
+        st.caption(
+            f"Source revision: {manifest.get('git_commit', 'unknown')} · "
+            f"Worktree dirty at training: {manifest.get('git_worktree_dirty', 'unknown')}"
+        )
+        st.dataframe(integrity, width="stretch", hide_index=True)
+
+    qa = data.get("qa_checklist", {})
+    if qa.get("checks"):
+        with st.expander("QA gate details"):
+            qa_rows = pd.DataFrame(qa["checks"])
+            qa_rows["detail"] = qa_rows["detail"].map(
+                lambda value: json.dumps(value, sort_keys=True) if isinstance(value, dict) else str(value)
+            )
+            st.dataframe(
+                qa_rows[["name", "passed", "blocking", "detail"]],
+                width="stretch",
+                hide_index=True,
+            )

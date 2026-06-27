@@ -5,8 +5,8 @@ strategies and turning market prices into pricing-actionable intelligence.
 
 The production purpose is to create a **frozen competitor market anchor** for a separate
 demand model and price-optimisation workflow. This standalone repository does not connect to
-Earnix or deploy pricing decisions. It creates governed CSV/ONNX handoff artifacts that can be
-imported and independently approved downstream.
+an external optimisation platform or deploy pricing decisions. It creates governed CSV/ONNX
+handoff artifacts that can be imported and independently approved downstream.
 
 1. Validate and align competitor quote data.
 2. Engineer aggregated market features such as average top-N competitor premium.
@@ -129,7 +129,7 @@ model:
 ```
 
 The ONNX file can be scored in any ONNX-compatible runtime (Python `onnxruntime`, Java,
-C++, Earnix ONNX import). If `target_transform: log1p` is configured, the ONNX model
+C++, or another compatible scoring runtime). If `target_transform: log1p` is configured, the ONNX model
 outputs log-scale values — apply `expm1` after scoring to recover the original premium scale.
 
 ## Optional H2O MOJO Backend
@@ -241,7 +241,7 @@ in the sidebar. Every chart responds to four interactive filters: date range,
 split (train/validation/test), competitor columns, and segment (region, channel,
 coverage type, vehicle segment).
 
-The seven tabs map directly to the visual spec in `Docs/objective.md`:
+The eight tabs map directly to the visual spec in `Docs/objective.md`:
 
 1. **Market Overview** — competitor premium trends, own-to-market ratio, conversion elasticity, market price index heatmap, mix-adjusted competitor price index
 2. **Competitor-Level** — individual price curves, missing quote rates, aggressiveness heatmap, per-competitor actual vs predicted (requires `individual_competitor_models.enabled: true`)
@@ -250,6 +250,7 @@ The seven tabs map directly to the visual spec in `Docs/objective.md`:
 5. **Monitoring** — data quality KPIs, D²/Gini/MAPE/Bias% by sample, prediction distribution drift, segment-level MAPE deterioration
 6. **Pricing Action** — segment positioning table with recommended action, opportunity map, segments ranked by pricing uncertainty
 7. **Profile Explorer** — raw-data drill-down with categorical multiselects and numeric range sliders; observed own vs competitor prices, rank distribution, conversion rate, and missing quote rate for any market segment
+8. **Demand Handoff** — rolling-origin anchor coverage, incremental demand-signal diagnostics, relative-price views, artifact integrity, QA gates, and filtered handoff export
 
 ## Monitoring
 

@@ -256,7 +256,7 @@ Writes `monitoring_metrics.json` (structured drift and performance data) and `mo
 
 ## Dashboard (`scripts/dashboard.py`)
 
-7-tab Streamlit application. Run with:
+8-tab Streamlit application. Run with:
 
 ```bash
 streamlit run scripts/dashboard.py -- --output-dir output/run_example
@@ -271,6 +271,7 @@ streamlit run scripts/dashboard.py -- --output-dir output/run_example
 | 5 · Monitoring | Data quality, performance by sample, prediction drift, segment MAPE |
 | 6 · Pricing Action | Segment positioning, opportunity map, MAPE by segment |
 | 7 · Profile Explorer | Raw-data drill-down — categorical + numeric filters, observed own vs competitor prices, rank distribution, conversion rate, missing quote rate |
+| 8 · Demand Handoff | Rolling-origin coverage, demand-signal diagnostic, relative-price views, artifact integrity, QA gates, filtered handoff export |
 
 ---
 

@@ -81,8 +81,8 @@ weights, and target-derived fields are hard-excluded from competitor-model predi
 `historical.py` creates expanding-window prior-month predictions for demand development;
 `scoring.py` creates batch-scored frozen anchors for downstream handoff.
 
-**Standalone boundary.** This repository does not call Earnix. `demand_readiness.json` is a
-local signal diagnostic; final elasticity and optimisation acceptance remains downstream.
+**Standalone boundary.** This repository does not call an external demand or optimisation
+platform. `demand_readiness.json` is a local signal diagnostic; final acceptance is downstream.
 
 ### Four model backends
 
@@ -102,4 +102,4 @@ ONNX export (`model.onnx`) is sklearn-only, via `skl2onnx`.
 
 ### Dashboard
 
-`scripts/dashboard.py` is a self-contained Streamlit app (7 tabs). It reads only from the `output/` directory — no pipeline code is imported at dashboard runtime. It discovers run directories automatically and loads whichever JSON/CSV artifacts are present, rendering charts conditionally when optional artifacts (e.g. `tuning_results.json`, per-competitor model files) exist.
+`scripts/dashboard.py` is a self-contained Streamlit app (8 tabs). It reads only from the `output/` directory — no pipeline code is imported at dashboard runtime. It discovers run directories automatically and loads whichever JSON/CSV artifacts are present, rendering charts conditionally when optional artifacts (e.g. `tuning_results.json`, per-competitor model files) exist. The eighth tab covers downstream handoff readiness and run governance.
