@@ -23,9 +23,10 @@ data:
     top_n: 3
     aggregation: avg_top_n  # challenger options: min | median | softmin
     softmin_temperature: 25.0
-    # "complete" keeps a stable competitor panel and avoids non-random availability bias.
-    # Use "available" only with an explicit actuarial justification.
-    missing_panel_policy: complete
+    # At least top_n premiums are required; panel composition is monitored separately.
+    missing_panel_policy: available
+    minimum_monthly_competitor_coverage: 0.70
+    minimum_monthly_target_eligibility: 0.80
   comparability_columns:
     - coverage_type
   premium_basis: annual_gross
@@ -119,6 +120,7 @@ monitoring:
   performance_gini_drop_threshold: 0.05
   performance_mape_increase_threshold: 3.0
   max_prediction_horizon_days: 90
+  competitor_coverage_drop_threshold: 0.10
 
 individual_competitor_models:
   enabled: false              # set to true to train one sklearn model per competitor column
@@ -135,6 +137,8 @@ historical_predictions:
   enabled: true
   min_train_rows: 500
   retrain_frequency: MS
+  lookback_months: 4
+  recency_half_life_days: 60
 
 demand_readiness:
   enabled: true

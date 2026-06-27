@@ -185,6 +185,8 @@ def write_business_report(
     individual_results: dict[str, Any] | None = None,
     historical_metadata: dict[str, Any] | None = None,
     demand_readiness: dict[str, Any] | None = None,
+    production_metadata: dict[str, Any] | None = None,
+    panel_summary: dict[str, Any] | None = None,
 ) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -243,6 +245,27 @@ def write_business_report(
             "- Final elasticity and optimisation acceptance remains downstream.",
             "",
         ]
+    if production_metadata or panel_summary:
+        lines += ["## Market Recency And Panel Availability", ""]
+        if production_metadata:
+            lines += [
+                f"- Deployable model window: {production_metadata['training_start']} to "
+                f"{production_metadata['training_cutoff']}",
+                f"- Deployable model rows: {production_metadata['training_rows']:,}",
+                f"- Lookback: {production_metadata['lookback_months']} months; recency "
+                f"half-life: {production_metadata['recency_half_life_days']} days",
+            ]
+        if panel_summary:
+            panel_bias = panel_summary.get("incomplete_vs_complete_target_bias_pct")
+            lines += [
+                f"- Minimum monthly competitor coverage: "
+                f"{panel_summary['minimum_monthly_competitor_coverage']:.1%}",
+                f"- Minimum monthly target eligibility: "
+                f"{panel_summary['minimum_monthly_target_eligibility']:.1%}",
+                f"- Incomplete-panel target difference: "
+                f"{panel_bias:+.2f}%" if panel_bias is not None else "- Panel bias unavailable",
+            ]
+        lines.append("")
     lines += [
         "## Pricing Interpretation",
         "",

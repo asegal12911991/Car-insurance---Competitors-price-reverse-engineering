@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from competitor_pricing_ai.config import PipelineConfig
-from competitor_pricing_ai.models import build_sklearn_pipeline
+from competitor_pricing_ai.models import build_sklearn_pipeline, get_training_weight
 
 
 def build_historical_market_features(
@@ -19,7 +19,7 @@ def build_historical_market_features(
     categorical_columns: list[str],
     numeric_columns: list[str],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Create expanding-window predictions using only observations from earlier months.
+    """Create finite-lookback predictions using only observations from earlier months.
 
     The warm-up period is intentionally left without predictions. Backfilling it with a model
     trained on future observations would make the downstream demand model look better than it
@@ -33,25 +33,34 @@ def build_historical_market_features(
     working["__score_period"] = working[date_column].dt.to_period("M")
     working["market_anchor"] = np.nan
     working["anchor_training_cutoff"] = pd.NaT
+    working["anchor_training_start"] = pd.NaT
+    working["anchor_training_rows"] = pd.Series(pd.NA, index=working.index, dtype="Int64")
 
     scored_periods = 0
     for period in sorted(working["__score_period"].unique()):
         score_mask = working["__score_period"].eq(period)
         period_start = period.to_timestamp()
-        train_mask = working[date_column].lt(period_start)
+        training_start = period_start - pd.DateOffset(
+            months=config.historical_predictions.lookback_months
+        )
+        train_mask = working[date_column].ge(training_start) & working[date_column].lt(period_start)
         train = working.loc[train_mask & working[target_column].notna()]
         if len(train) < config.historical_predictions.min_train_rows:
             continue
 
         model = build_sklearn_pipeline(config, categorical_columns, numeric_columns)
-        fit_kwargs: dict[str, Any] = {}
-        if config.data.weight_column and config.data.weight_column in train:
-            fit_kwargs["model__sample_weight"] = train[config.data.weight_column].to_numpy()
+        fit_kwargs: dict[str, Any] = {
+            "model__sample_weight": get_training_weight(
+                train, config, as_of_date=period_start
+            )
+        }
         model.fit(train[feature_columns], train[target_column], **fit_kwargs)
         working.loc[score_mask, "market_anchor"] = model.predict(
             working.loc[score_mask, feature_columns]
         )
         working.loc[score_mask, "anchor_training_cutoff"] = train[date_column].max()
+        working.loc[score_mask, "anchor_training_start"] = train[date_column].min()
+        working.loc[score_mask, "anchor_training_rows"] = len(train)
         scored_periods += 1
 
     own_column = config.data.own_premium_column
@@ -62,7 +71,7 @@ def build_historical_market_features(
         working["log_relative_price"] = np.log(own / anchor)
         working["price_gap_to_market_anchor"] = own - anchor
 
-    working["anchor_method"] = "rolling_origin_expanding_window"
+    working["anchor_method"] = "rolling_origin_finite_lookback"
     working["anchor_is_frozen_for_optimization"] = True
     working["anchor_model_backend"] = "sklearn"
 
@@ -74,19 +83,24 @@ def build_historical_market_features(
         + [column for column in [own_column, config.data.conversion_column,
                                   config.data.weight_column] if column]
         + [target_column, "market_anchor", "relative_price_ratio", "log_relative_price",
-           "price_gap_to_market_anchor", "anchor_training_cutoff", "anchor_method",
+           "price_gap_to_market_anchor", "anchor_training_start", "anchor_training_cutoff",
+           "anchor_training_rows", "anchor_method",
            "anchor_is_frozen_for_optimization", "anchor_model_backend"]
     ))
     output = working[[column for column in keep if column in working]].copy()
     metadata = {
-        "method": "rolling_origin_expanding_window",
+        "method": "rolling_origin_finite_lookback",
         "backend": "sklearn",
         "minimum_training_rows": config.historical_predictions.min_train_rows,
+        "lookback_months": config.historical_predictions.lookback_months,
+        "recency_half_life_days": config.historical_predictions.recency_half_life_days,
         "rows_total": int(len(output)),
         "rows_scored": int(output["market_anchor"].notna().sum()),
         "rows_warmup_unscored": int(output["market_anchor"].isna().sum()),
         "periods_scored": scored_periods,
-        "leakage_rule": "Each anchor uses competitor observations strictly before its month.",
+        "leakage_rule": (
+            "Each anchor uses only the configured recent lookback ending before its month."
+        ),
     }
     return output, metadata
 

@@ -15,14 +15,20 @@ def main() -> int:
     parser.add_argument("--current-output", default=None)
     parser.add_argument("--rows", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--missing-rate", type=float, default=0.15)
     args = parser.parse_args()
 
-    data = generate(args.rows, args.seed, drift=False)
+    data = generate(args.rows, args.seed, drift=False, missing_rate=args.missing_rate)
     write_csv(data, args.output)
     print(f"Wrote {len(data):,} rows to {args.output}")
 
     if args.current_output:
-        current = generate(max(1000, args.rows // 3), args.seed + 1, drift=True)
+        current = generate(
+            max(1000, args.rows // 3),
+            args.seed + 1,
+            drift=True,
+            missing_rate=args.missing_rate,
+        )
         write_csv(current, args.current_output)
         print(f"Wrote {len(current):,} current rows to {args.current_output}")
     return 0
@@ -34,7 +40,7 @@ def write_csv(frame: pd.DataFrame, path: str | Path) -> None:
     frame.to_csv(output, index=False)
 
 
-def generate(rows: int, seed: int, drift: bool) -> pd.DataFrame:
+def generate(rows: int, seed: int, drift: bool, missing_rate: float = 0.15) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     start_date = np.datetime64("2024-01-01") if not drift else np.datetime64("2025-07-01")
     dates = start_date + rng.integers(0, 520 if not drift else 90, size=rows).astype("timedelta64[D]")
@@ -104,7 +110,7 @@ def generate(rows: int, seed: int, drift: bool) -> pd.DataFrame:
     data["converted"] = rng.binomial(1, conversion_probability)
 
     frame = pd.DataFrame(data)
-    missing_mask = rng.random((rows, len(competitor_offsets))) < 0.015
+    missing_mask = rng.random((rows, len(competitor_offsets))) < missing_rate
     for idx, column in enumerate(competitor_offsets):
         frame.loc[missing_mask[:, idx], column] = np.nan
     return frame.sort_values("quote_date").reset_index(drop=True)

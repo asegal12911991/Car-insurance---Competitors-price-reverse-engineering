@@ -97,7 +97,9 @@ def train_sklearn_model(
     validation_x, validation_y = split.validation[feature_columns], split.validation[target_column]
     test_x, test_y = split.test[feature_columns], split.test[target_column]
 
-    train_weight = get_sample_weight(split.train, config)
+    train_weight = get_training_weight(
+        split.train, config, as_of_date=split.train[config.data.date_column].max()
+    )
     fit_kwargs = {}
     if train_weight is not None:
         weight_key = (
@@ -226,6 +228,101 @@ def get_sample_weight(frame: pd.DataFrame, config: PipelineConfig) -> np.ndarray
     if np.any(weight < 0) or not np.any(weight > 0):
         raise ValueError("Model weights must be non-negative with at least one positive value")
     return weight
+
+
+def get_training_weight(
+    frame: pd.DataFrame,
+    config: PipelineConfig,
+    as_of_date: str | pd.Timestamp | None = None,
+) -> np.ndarray:
+    """Combine optional portfolio weights with exponential recency weights."""
+    base = get_sample_weight(frame, config)
+    weight = np.ones(len(frame), dtype=float) if base is None else base.astype(float)
+    half_life = config.historical_predictions.recency_half_life_days
+    if half_life is not None:
+        dates = pd.to_datetime(frame[config.data.date_column], errors="coerce")
+        cutoff = pd.to_datetime(as_of_date, errors="coerce")
+        if pd.isna(cutoff):
+            cutoff = dates.max()
+        age_days = (cutoff - dates).dt.days.clip(lower=0).fillna(0).to_numpy(dtype=float)
+        weight *= np.power(0.5, age_days / half_life)
+    positive_mean = weight[weight > 0].mean() if np.any(weight > 0) else 0.0
+    if positive_mean <= 0:
+        raise ValueError("Combined training weights must contain a positive value")
+    return weight / positive_mean
+
+
+def refit_recent_production_model(
+    data: pd.DataFrame,
+    config: PipelineConfig,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    numeric_columns: list[str],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Refit the deployable sklearn model on the latest configured lookback window."""
+    if config.model.backend != "sklearn":
+        return {}
+    target = config.data.target.name
+    date_column = config.data.date_column
+    dates = pd.to_datetime(data[date_column], errors="coerce")
+    cutoff = dates.max()
+    start = cutoff - pd.DateOffset(months=config.historical_predictions.lookback_months)
+    mask = dates.ge(start) & dates.le(cutoff) & data[target].notna()
+    recent = data.loc[mask].copy()
+    if len(recent) < config.historical_predictions.min_train_rows:
+        raise ValueError(
+            "Recent production lookback has fewer eligible rows than min_train_rows: "
+            f"{len(recent)} < {config.historical_predictions.min_train_rows}"
+        )
+
+    model_path = output_dir / "model.joblib"
+    evaluation_path = output_dir / "model_evaluation.joblib"
+    if model_path.exists():
+        joblib.dump(joblib.load(model_path), evaluation_path)
+
+    model = build_sklearn_pipeline(config, categorical_columns, numeric_columns)
+    model.fit(
+        recent[feature_columns],
+        recent[target],
+        model__sample_weight=get_training_weight(recent, config, as_of_date=cutoff),
+    )
+    bundle = {
+        "model": model,
+        "backend": "sklearn",
+        "feature_columns": feature_columns,
+        "categorical_columns": categorical_columns,
+        "numeric_columns": numeric_columns,
+        "target_column": target,
+        "target_transform": config.model.target_transform,
+        "training_start": str(recent[date_column].min()),
+        "training_cutoff": str(recent[date_column].max()),
+        "lookback_months": config.historical_predictions.lookback_months,
+        "recency_half_life_days": config.historical_predictions.recency_half_life_days,
+        "schema_version": "2.1",
+    }
+    joblib.dump(bundle, model_path)
+    if config.model.export_onnx:
+        onnx_path = export_sklearn_onnx(
+            model, feature_columns, categorical_columns, output_dir
+        )
+        validate_onnx_parity(
+            model,
+            onnx_path,
+            recent[feature_columns],
+            feature_columns,
+            categorical_columns,
+            output_dir,
+        )
+    return {
+        "model_path": str(model_path),
+        "evaluation_model_path": str(evaluation_path),
+        "training_start": str(recent[date_column].min()),
+        "training_cutoff": str(recent[date_column].max()),
+        "training_rows": int(len(recent)),
+        "lookback_months": config.historical_predictions.lookback_months,
+        "recency_half_life_days": config.historical_predictions.recency_half_life_days,
+    }
 
 
 def export_sklearn_onnx(
@@ -389,7 +486,20 @@ def train_individual_competitor_models(
                 check_inverse=False,
             )
 
-        pipeline.fit(train_df[feature_columns], train_df[comp_col])
+        weight_key = (
+            "regressor__model__sample_weight"
+            if isinstance(pipeline, TransformedTargetRegressor)
+            else "model__sample_weight"
+        )
+        pipeline.fit(
+            train_df[feature_columns],
+            train_df[comp_col],
+            **{
+                weight_key: get_training_weight(
+                    train_df, config, as_of_date=train_df[config.data.date_column].max()
+                )
+            },
+        )
         train_pred = pipeline.predict(train_df[feature_columns])
         val_pred = pipeline.predict(val_df[feature_columns])
         test_pred = pipeline.predict(test_df[feature_columns])
@@ -414,6 +524,8 @@ def train_individual_competitor_models(
                 "numeric_columns": numeric_columns,
                 "target_column": comp_col,
                 "target_transform": config.model.target_transform,
+                "training_start": str(train_df[config.data.date_column].min()),
+                "training_cutoff": str(train_df[config.data.date_column].max()),
             },
             model_path,
         )
@@ -482,7 +594,9 @@ def train_catboost_model(
     model.fit(
         train_x,
         train_y,
-        sample_weight=get_sample_weight(split.train, config),
+        sample_weight=get_training_weight(
+            split.train, config, as_of_date=split.train[config.data.date_column].max()
+        ),
         eval_set=(val_x, val_y),
         use_best_model=True,
     )
@@ -599,7 +713,9 @@ def train_lightgbm_model(
     )
     model.fit(
         X_train, train_y,
-        sample_weight=get_sample_weight(split.train, config),
+        sample_weight=get_training_weight(
+            split.train, config, as_of_date=split.train[config.data.date_column].max()
+        ),
         eval_set=[(X_val, val_y)],
         callbacks=[
             lgb.early_stopping(lgb_cfg.early_stopping_rounds, verbose=False),

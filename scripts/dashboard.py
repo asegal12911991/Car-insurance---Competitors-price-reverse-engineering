@@ -116,8 +116,13 @@ def load_run(output_dir_str: str) -> dict:
     jload("demand_readiness.json", "demand_readiness")
     jload("monitoring_metrics.json", "monitoring")
     jload("run_manifest.json", "run_manifest")
+    jload("panel_diagnostics.json", "panel_diagnostics")
+    jload("production_model_metadata.json", "production_model_metadata")
     cload("reference_basket_index.csv", "basket_index")
     cload("historical_market_features.csv", "historical_market")
+    cload("competitor_coverage_by_month.csv", "competitor_coverage")
+    cload("target_eligibility_by_month.csv", "target_eligibility")
+    cload("target_panel_composition.csv", "panel_composition")
 
     yml_p = output_dir / "run_config_resolved.yml"
     if yml_p.exists():
@@ -1007,6 +1012,75 @@ with tab5:
                 st.dataframe(pd.DataFrame(drift_rows), width="stretch", hide_index=True)
         st.divider()
 
+    coverage_history = data.get("competitor_coverage")
+    eligibility_history = data.get("target_eligibility")
+    if coverage_history is not None or eligibility_history is not None:
+        st.subheader("Competitor Availability and Target Eligibility")
+        coverage_col, eligibility_col = st.columns(2)
+        with coverage_col:
+            if coverage_history is not None and not coverage_history.empty:
+                coverage_plot = coverage_history.copy()
+                coverage_plot["quote_month"] = pd.to_datetime(
+                    coverage_plot["quote_month"], errors="coerce"
+                )
+                coverage_plot["quote_rate_pct"] = coverage_plot["quote_rate"] * 100
+                fig = px.line(
+                    coverage_plot,
+                    x="quote_month",
+                    y="quote_rate_pct",
+                    color="competitor",
+                    markers=True,
+                    title="Monthly Quote Availability by Competitor",
+                    labels={"quote_month": "", "quote_rate_pct": "Available (%)"},
+                )
+                fig.add_hline(
+                    y=data.get("run_config", {}).get("data", {}).get("target", {}).get(
+                        "minimum_monthly_competitor_coverage", 0.70
+                    ) * 100,
+                    line_dash="dash",
+                    line_color="grey",
+                )
+                st.plotly_chart(fig, width="stretch")
+        with eligibility_col:
+            if eligibility_history is not None and not eligibility_history.empty:
+                eligibility_plot = eligibility_history.copy()
+                eligibility_plot["quote_month"] = pd.to_datetime(
+                    eligibility_plot["quote_month"], errors="coerce"
+                )
+                eligibility_plot["eligibility_pct"] = (
+                    eligibility_plot["target_eligibility_rate"] * 100
+                )
+                fig = px.bar(
+                    eligibility_plot,
+                    x="quote_month",
+                    y="eligibility_pct",
+                    title="Monthly Top-N Target Eligibility",
+                    labels={"quote_month": "", "eligibility_pct": "Eligible (%)"},
+                )
+                fig.update_yaxes(range=[0, 105])
+                st.plotly_chart(fig, width="stretch")
+
+        panel_summary = data.get("panel_diagnostics", {})
+        panel_kpis = st.columns(3)
+        panel_kpis[0].metric(
+            "Minimum monthly competitor coverage",
+            f"{panel_summary.get('minimum_monthly_competitor_coverage', 0):.1%}",
+        )
+        panel_kpis[1].metric(
+            "Minimum monthly target eligibility",
+            f"{panel_summary.get('minimum_monthly_target_eligibility', 0):.1%}",
+        )
+        panel_bias = panel_summary.get("incomplete_vs_complete_target_bias_pct")
+        panel_kpis[2].metric(
+            "Incomplete-panel target difference",
+            f"{panel_bias:+.2f}%" if panel_bias is not None else "—",
+        )
+        composition = data.get("panel_composition")
+        if composition is not None and not composition.empty:
+            with st.expander("Top-N panel composition details"):
+                st.dataframe(composition, width="stretch", hide_index=True)
+        st.divider()
+
     col_a, col_b = st.columns(2)
 
     # 5a — R² and Gini by sample
@@ -1370,6 +1444,10 @@ with tab8:
         "Incremental signal check",
         "Pass" if demand.get("passes_incremental_signal_check") else "Review",
     )
+    st.caption(
+        f"Rolling lookback: {historical_meta.get('lookback_months', '—')} months · "
+        f"Recency half-life: {historical_meta.get('recency_half_life_days', '—')} days"
+    )
 
     if demand.get("status") == "diagnostic_only":
         st.info(
@@ -1483,6 +1561,7 @@ with tab8:
     st.subheader("Artifact Governance")
     integrity = pd.DataFrame(data.get("manifest_integrity", []))
     manifest = data.get("run_manifest", {})
+    production_meta = data.get("production_model_metadata", {})
     if integrity.empty:
         no_data("Run manifest not available.")
     else:
@@ -1495,6 +1574,12 @@ with tab8:
             f"Source revision: {manifest.get('git_commit', 'unknown')} · "
             f"Worktree dirty at training: {manifest.get('git_worktree_dirty', 'unknown')}"
         )
+        if production_meta:
+            st.caption(
+                f"Deployable model window: {production_meta.get('training_start', 'unknown')} "
+                f"to {production_meta.get('training_cutoff', 'unknown')} · "
+                f"{production_meta.get('training_rows', 0):,} eligible rows"
+            )
         st.dataframe(integrity, width="stretch", hide_index=True)
 
     qa = data.get("qa_checklist", {})

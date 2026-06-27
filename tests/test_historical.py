@@ -48,6 +48,7 @@ def test_historical_anchors_only_use_prior_months() -> None:
     )
     scored = result.dropna(subset=["market_anchor"])
     assert metadata["rows_scored"] > 0
+    assert metadata["lookback_months"] == 4
     assert (
         pd.to_datetime(scored["anchor_training_cutoff"])
         < pd.to_datetime(scored["quote_date"]).dt.to_period("M").dt.to_timestamp()

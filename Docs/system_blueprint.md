@@ -57,12 +57,21 @@ Raw quotes CSV
 
 ### Standalone demand-model contract
 
-- `historical_market_features.csv` uses only competitor observations before each scoring month.
+- `historical_market_features.csv` uses only the configured recent lookback before each month.
+- Recency half-life weights emphasize the newest observations in dynamic markets.
+- The deployable model is refit on the latest lookback after out-of-time evaluation.
 - Warm-up observations are unscored; they are never backfilled using future information.
 - `score` accepts risk/date fields without requiring competitor premiums.
 - `market_anchor` is frozen; only own candidate premium moves in downstream optimisation.
 - `log_relative_price = log(candidate own premium / market_anchor)` is the recommended input.
 - `demand_readiness.json` is diagnostic only and does not replace downstream governance.
+
+### Incomplete competitor panels
+
+With `missing_panel_policy: available`, a row is eligible when at least `top_n` premiums are
+present. This preserves data when individual quotes are missing. The pipeline writes monthly
+competitor coverage, target eligibility, top-N composition, and incomplete-versus-complete
+target bias artifacts. Coverage and eligibility have configurable blocking QA floors.
 
 ## Step Details
 
@@ -128,7 +137,7 @@ Four backends, all using Gamma / Tweedie loss appropriate for positive right-ske
 | Backend | Key notes |
 |---|---|
 | `sklearn` (default) | `HistGradientBoostingRegressor`, Gamma loss, OrdinalEncoder for categoricals |
-| `catboost` | Native string categorical handling, Tweedie:variance_power=2 loss, early stopping on validation set |
+| `catboost` | Native string categorical handling, Tweedie:variance_power=1.9 loss, early stopping on validation set |
 | `lightgbm` | sklearn ColumnTransformer preprocessing + LGBMRegressor Gamma loss, early stopping |
 | `h2o` | H2O GBM Gamma distribution, MOJO export, requires JVM; no Optuna tuning, no ONNX export |
 
@@ -138,6 +147,10 @@ All backends produce:
 - `feature_importance.csv` — permutation importance on validation set
 - `lift_table_test.json` — decile lift (mean actual vs mean predicted, pred/actual ratio)
 - `metrics.json` — full metric set for all three splits
+
+For the default sklearn backend, evaluation uses the configured recent lookback and recency
+weights. After evaluation, `model_evaluation.joblib` archives that fitted model and
+`model.joblib` is refit on the latest available lookback for batch scoring.
 
 ### 4c · Reference Basket (`basket.py`)
 
@@ -188,6 +201,8 @@ Metrics computed on all three splits:
 |---|---|
 | D² ≥ d2_min | 0.75 |
 | RMSE ≤ rmse_max | 60 |
+| Monthly competitor coverage | ≥ configured floor (default 70%) |
+| Monthly top-N target eligibility | ≥ configured floor (default 80%) |
 
 **Advisory checks (non-blocking):**
 
@@ -203,6 +218,7 @@ All outputs written to `output/<run_name>/`:
 
 ```
 model.joblib                        # model bundle
+model_evaluation.joblib             # archived out-of-time evaluation fit
 model.cbm / model.onnx              # CatBoost / ONNX exports (backend-dependent)
 metrics.json
 data_quality.json
@@ -216,6 +232,15 @@ lift_table_test.json
 reference_features.csv              # test set features + predictions (monitoring reference)
 reference_basket.csv
 reference_basket_index.csv
+historical_market_features.csv
+historical_prediction_metadata.json
+production_model_metadata.json
+competitor_coverage_by_month.csv
+target_eligibility_by_month.csv
+target_panel_composition.csv
+panel_diagnostics.json
+demand_readiness.json
+run_manifest.json
 tuning_results.json                 # only when tuning.enabled: true
 market_data.csv                     # all splits combined, for dashboard
 qa_checklist.json

@@ -162,6 +162,8 @@ def _catboost_objective(
     except ImportError as exc:
         raise RuntimeError("catboost is not installed") from exc
 
+    from competitor_pricing_ai.models import get_training_weight
+
     cb     = config.model.catboost
     target = config.data.target.name
     # Precompute data slices once — shared across all trials
@@ -182,7 +184,15 @@ def _catboost_objective(
             early_stopping_rounds=cb.early_stopping_rounds,
             verbose=False,
         )
-        model.fit(train_x, train_y, eval_set=(val_x, val_y), use_best_model=True)
+        model.fit(
+            train_x,
+            train_y,
+            sample_weight=get_training_weight(
+                split.train, config, as_of_date=split.train[config.data.date_column].max()
+            ),
+            eval_set=(val_x, val_y),
+            use_best_model=True,
+        )
         return float(regression_metrics(val_y, model.predict(val_x))[metric])
 
     return objective
@@ -205,7 +215,7 @@ def _lightgbm_objective(
     except ImportError as exc:
         raise RuntimeError("lightgbm is not installed") from exc
 
-    from competitor_pricing_ai.models import build_sklearn_pipeline
+    from competitor_pricing_ai.models import build_sklearn_pipeline, get_training_weight
 
     lgb_cfg = config.model.lightgbm
     target  = config.data.target.name
@@ -234,6 +244,9 @@ def _lightgbm_objective(
         )
         model.fit(
             X_train, train_y,
+            sample_weight=get_training_weight(
+                split.train, config, as_of_date=split.train[config.data.date_column].max()
+            ),
             eval_set=[(X_val, val_y)],
             callbacks=[
                 lgb.early_stopping(lgb_cfg.early_stopping_rounds, verbose=False),
@@ -257,7 +270,7 @@ def _sklearn_objective(
     numeric_columns: list[str],
     metric: str,
 ) -> Callable:
-    from competitor_pricing_ai.models import build_sklearn_pipeline
+    from competitor_pricing_ai.models import build_sklearn_pipeline, get_training_weight
 
     target  = config.data.target.name
     train_x = split.train[feature_columns]
@@ -272,7 +285,13 @@ def _sklearn_objective(
         trial_config.model.sklearn.l2_regularization = trial.suggest_float("l2_regularization", 0.0, 1.0)
 
         pipeline = build_sklearn_pipeline(trial_config, categorical_columns, numeric_columns)
-        pipeline.fit(train_x, train_y)
+        pipeline.fit(
+            train_x,
+            train_y,
+            model__sample_weight=get_training_weight(
+                split.train, config, as_of_date=split.train[config.data.date_column].max()
+            ),
+        )
         return float(regression_metrics(val_y, pipeline.predict(val_x))[metric])
 
     return objective

@@ -79,3 +79,32 @@ def date_range(df: pd.DataFrame, date_column: str) -> dict[str, str | None]:
         return {"min": None, "max": None}
     dates = pd.to_datetime(df[date_column], errors="coerce")
     return {"min": str(dates.min().date()), "max": str(dates.max().date())}
+
+
+def restrict_training_lookback(
+    split: SplitResult, config: PipelineConfig
+) -> SplitResult:
+    """Keep evaluation training aligned to the configured recent-market window."""
+    date_column = config.data.date_column
+    cutoff = pd.to_datetime(split.train[date_column], errors="coerce").max()
+    start = cutoff - pd.DateOffset(months=config.historical_predictions.lookback_months)
+    train_dates = pd.to_datetime(split.train[date_column], errors="coerce")
+    recent_train = split.train.loc[train_dates.ge(start)].copy()
+    if len(recent_train) < config.historical_predictions.min_train_rows:
+        raise ValueError(
+            "Evaluation training lookback has fewer eligible rows than min_train_rows: "
+            f"{len(recent_train)} < {config.historical_predictions.min_train_rows}"
+        )
+    metadata = dict(split.metadata)
+    metadata["pre_lookback_train_rows"] = int(len(split.train))
+    metadata["training_lookback_months"] = config.historical_predictions.lookback_months
+    metadata["row_counts"] = dict(metadata["row_counts"])
+    metadata["row_counts"]["train"] = int(len(recent_train))
+    metadata["date_ranges"] = dict(metadata["date_ranges"])
+    metadata["date_ranges"]["train"] = date_range(recent_train, date_column)
+    return SplitResult(
+        train=recent_train,
+        validation=split.validation,
+        test=split.test,
+        metadata=metadata,
+    )

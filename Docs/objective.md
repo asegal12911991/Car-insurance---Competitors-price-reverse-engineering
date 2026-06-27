@@ -26,6 +26,8 @@ it produces historical and batch-scored handoff files plus optional ONNX artifac
 | Monitoring | PSI-based feature drift detection and performance degradation alerts against configured thresholds |
 | Interactive dashboard | 8-tab Streamlit application covering market analysis, profile exploration, and demand handoff |
 | Demand-model handoff | Rolling-origin historical anchors, frozen relative-price fields, batch scoring, provenance hashes |
+| Dynamic-market recency | Finite recent lookback, exponential recency weighting, latest-window production refit |
+| Incomplete-panel governance | Monthly coverage, target eligibility, top-N composition, and panel bias diagnostics |
 
 ## Downstream Acceptance Boundary
 
@@ -171,6 +173,7 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
 *Operational bridge from competitor modelling to a separate demand workflow.*
 
 - Historical rolling-origin anchor coverage and warm-up visibility
+- Configured lookback, recency half-life, and deployable-model training dates
 - Baseline versus market-anchor demand diagnostic
 - Actual target versus prior-period market anchor over time
 - Relative-price distribution and observed conversion by band
@@ -188,6 +191,8 @@ rate changes rather than shifting risk profile mix in the observed monthly data.
   - D² ≥ d2_min on both validation and test sets
   - RMSE ≤ rmse_max on both validation and test sets
   - Model export file present (serialised model; MOJO if H2O; ONNX if requested)
+  - Minimum monthly competitor coverage above the configured floor
+  - Minimum monthly top-N target eligibility above the configured floor
   - Runtime within the configured budget
 - **Advisory checks** (logged and flagged but non-blocking):
   - MAPE ≤ mape_max, Gini ≥ gini_min, Bias% ≤ mean_bias_pct_max on validation set

@@ -106,6 +106,14 @@ def engineer_market_features(
         )
         market_columns.append("market_price_index")
 
+    engineered["competitor_panel_signature"] = competitor_prices.apply(
+        lambda row: "|".join(row.index[row.notna()].tolist()), axis=1
+    )
+    engineered["top_n_competitor_signature"] = competitor_prices.apply(
+        lambda row: top_n_signature(row, config.data.target.top_n), axis=1
+    )
+    market_columns.extend(["competitor_panel_signature", "top_n_competitor_signature"])
+
     if config.features.add_relative_position and config.data.own_premium_column:
         own_column = config.data.own_premium_column
         if own_column in engineered.columns:
@@ -182,6 +190,13 @@ def row_softmin(values: pd.DataFrame, temperature: float) -> pd.Series:
     result = safe_minimum - temperature * np.log(np.maximum(mean_shifted, 1e-12))
     result[all_missing] = np.nan
     return pd.Series(result, index=values.index)
+
+
+def top_n_signature(row: pd.Series, top_n: int) -> str | None:
+    available = row.dropna()
+    if len(available) < top_n:
+        return None
+    return "|".join(sorted(available.nsmallest(top_n).index.tolist()))
 
 
 def safe_divide(numerator: pd.Series, denominator: pd.Series | None) -> pd.Series:

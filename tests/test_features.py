@@ -78,6 +78,7 @@ def test_select_model_features_excludes_competitor_and_target_derived_columns() 
 
 def test_complete_panel_policy_drops_composition_changing_target() -> None:
     config = make_config()
+    config.data.target.missing_panel_policy = "complete"
     df = pd.DataFrame({
         "quote_id": [1],
         "quote_date": ["2025-01-01"],
@@ -90,3 +91,22 @@ def test_complete_panel_policy_drops_composition_changing_target() -> None:
     })
     engineered, _ = engineer_market_features(df, config)
     assert pd.isna(engineered.loc[0, "avg_top_2_competitor_premium"])
+
+
+def test_available_panel_policy_uses_rows_with_enough_quotes() -> None:
+    config = make_config()
+    config.data.target.missing_panel_policy = "available"
+    df = pd.DataFrame({
+        "quote_id": [1],
+        "quote_date": ["2025-01-01"],
+        "region": ["center"],
+        "driver_age": [40],
+        "own_premium": [105],
+        "comp_a": [100],
+        "comp_b": [120],
+        "comp_c": [None],
+    })
+    engineered, _ = engineer_market_features(df, config)
+    assert engineered.loc[0, "avg_top_2_competitor_premium"] == 110
+    assert engineered.loc[0, "competitor_count"] == 2
+    assert engineered.loc[0, "top_n_competitor_signature"] == "comp_a|comp_b"

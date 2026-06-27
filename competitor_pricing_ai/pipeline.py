@@ -17,9 +17,14 @@ from competitor_pricing_ai.features import FeatureMetadata, engineer_market_feat
 from competitor_pricing_ai.governance import write_run_manifest
 from competitor_pricing_ai.historical import save_historical_market_features
 from competitor_pricing_ai.metrics import lift_table
-from competitor_pricing_ai.models import train_individual_competitor_models, train_model
+from competitor_pricing_ai.models import (
+    refit_recent_production_model,
+    train_individual_competitor_models,
+    train_model,
+)
+from competitor_pricing_ai.panel import save_panel_diagnostics
 from competitor_pricing_ai.reporting import build_qa_checklist, write_business_report, write_json
-from competitor_pricing_ai.splits import time_based_split
+from competitor_pricing_ai.splits import restrict_training_lookback, time_based_split
 from competitor_pricing_ai.tuning import apply_tuned_params, tune_hyperparameters
 
 
@@ -43,6 +48,7 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
     typed = coerce_basic_types(raw, config)
     engineered, feature_metadata = engineer_market_features(typed, config)
     split = time_based_split(engineered, config)
+    split = restrict_training_lookback(split, config)
     feature_columns, categorical_columns, numeric_columns = select_model_features(
         engineered, config, feature_metadata
     )
@@ -90,6 +96,13 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
     )
 
     artifacts["market_data"] = save_market_data(split, config, feature_metadata, output_dir)
+    panel_artifacts, panel_summary = save_panel_diagnostics(
+        engineered,
+        feature_metadata.competitor_columns,
+        config,
+        output_dir,
+    )
+    artifacts.update(panel_artifacts)
 
     historical_metadata = None
     demand_readiness = None
@@ -113,6 +126,21 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
             write_json(demand_readiness, output_dir / "demand_readiness.json")
             artifacts["demand_readiness"] = str(output_dir / "demand_readiness.json")
 
+    production_metadata = refit_recent_production_model(
+        engineered,
+        config,
+        feature_columns,
+        categorical_columns,
+        numeric_columns,
+        output_dir,
+    )
+    if production_metadata:
+        write_json(production_metadata, output_dir / "production_model_metadata.json")
+        artifacts["production_model_metadata"] = str(
+            output_dir / "production_model_metadata.json"
+        )
+        artifacts["evaluation_model"] = production_metadata["evaluation_model_path"]
+
     try:
         artifacts.update(generate_basket_artefacts(training_result, split, config, output_dir))
     except Exception as exc:  # noqa: BLE001
@@ -134,14 +162,42 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
         onnx_path=training_result.onnx_path,
         runtime_seconds=runtime_seconds,
     )
-    qa_checklist["checks"].append(
+    minimum_coverage = panel_summary["minimum_monthly_competitor_coverage"]
+    minimum_eligibility = panel_summary["minimum_monthly_target_eligibility"]
+    qa_checklist["checks"].extend([
         {
-            "name": "stable_competitor_panel",
-            "passed": config.data.target.missing_panel_policy == "complete",
+            "name": "monthly_competitor_coverage",
+            "passed": minimum_coverage is not None and minimum_coverage >= (
+                config.data.target.minimum_monthly_competitor_coverage
+            ),
             "blocking": True,
-            "detail": config.data.target.missing_panel_policy,
-        }
-    )
+            "detail": (
+                f"minimum={minimum_coverage:.1%}; threshold="
+                f"{config.data.target.minimum_monthly_competitor_coverage:.1%}"
+            ) if minimum_coverage is not None else "No coverage data",
+        },
+        {
+            "name": "monthly_target_eligibility",
+            "passed": minimum_eligibility is not None and minimum_eligibility >= (
+                config.data.target.minimum_monthly_target_eligibility
+            ),
+            "blocking": True,
+            "detail": (
+                f"minimum={minimum_eligibility:.1%}; threshold="
+                f"{config.data.target.minimum_monthly_target_eligibility:.1%}"
+            ) if minimum_eligibility is not None else "No eligibility data",
+        },
+        {
+            "name": "incomplete_panel_target_bias",
+            "passed": (
+                panel_summary["incomplete_vs_complete_target_bias_pct"] is not None
+                and abs(panel_summary["incomplete_vs_complete_target_bias_pct"])
+                <= config.evaluation.mean_bias_pct_max
+            ),
+            "blocking": False,
+            "detail": panel_summary["incomplete_vs_complete_target_bias_pct"],
+        },
+    ])
     comparability_missing = sum(data_quality.get("comparability_missing", {}).values())
     qa_checklist["checks"].append(
         {
@@ -202,6 +258,8 @@ def run_training_pipeline(config_or_path: PipelineConfig | str | Path) -> Pipeli
         individual_results=individual_results or None,
         historical_metadata=historical_metadata,
         demand_readiness=demand_readiness,
+        production_metadata=production_metadata,
+        panel_summary=panel_summary,
     )
 
     artifacts["run_manifest"] = write_run_manifest(config, artifacts, output_dir)

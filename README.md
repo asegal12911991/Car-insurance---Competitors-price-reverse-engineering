@@ -58,12 +58,18 @@ Outputs are written to the configured `project.output_dir`, including:
 - `historical_market_features.csv` — prior-period-only anchors for demand development.
 - `demand_readiness.json` — local incremental-signal diagnostic when conversion exists.
 - `run_manifest.json` — hashes and provenance for every artifact in the run.
+- `competitor_coverage_by_month.csv` — quote availability by competitor and month.
+- `target_eligibility_by_month.csv` — monthly share with at least `top_n` premiums.
+- `target_panel_composition.csv` — competitors composing the observed top‑N target.
+- `production_model_metadata.json` — recent-window dates and rows used for deployment refit.
 
 ## Demand-Model Handoff
 
 The model never uses own premium, conversion, competitor observations, identifiers, or
-target-derived fields as predictors. Historical anchors use expanding-window monthly fits;
+target-derived fields as predictors. Historical anchors use finite recent-lookback monthly fits;
 the initial warm-up period is left unscored rather than backfilled with future information.
+Optional exponential recency weights give newer observations more influence. After evaluation,
+the deployable model is refit on the latest lookback window.
 
 ```text
 market_anchor = predicted comparable competitor premium
@@ -208,9 +214,15 @@ Each row should represent a comparable quote profile or market observation. Typi
 
 Competitor premiums must share coverage, limits, excess/deductible, annualisation, fees,
 taxes, and payment basis. Configure those fields under `data.comparability_columns`. The
-default `missing_panel_policy: complete` keeps a fixed panel and avoids changing target
-composition when a low-priced competitor does not quote. Challenger targets (`min`, `median`,
-and `softmin`) can be compared across governed runs by downstream demand value.
+default `missing_panel_policy: available` requires at least `top_n` premiums without discarding
+every incomplete row. Because target composition can change when a competitor does not quote,
+monthly availability, top‑N composition, eligibility, and incomplete-panel bias are QA outputs.
+Challenger targets (`min`, `median`, and `softmin`) can be compared across governed runs by
+downstream demand value.
+
+For dynamic markets, configure `historical_predictions.lookback_months` and
+`recency_half_life_days`. A nine-month extract can be appropriate when older rates are not
+representative; the sample configuration uses a four-month lookback and a 60-day half-life.
 
 The pipeline creates robust aggregated targets, with `avg_top_3_competitor_premium`
 as the recommended default. Individual competitor prices can be noisy; aggregated

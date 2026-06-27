@@ -78,8 +78,17 @@ All outputs land in `output/<run_name>/` as configured by `project.output_dir`.
 
 **Frozen market-anchor contract.** Own premium, conversion, competitor observations, IDs,
 weights, and target-derived fields are hard-excluded from competitor-model predictors.
-`historical.py` creates expanding-window prior-month predictions for demand development;
+`historical.py` creates finite-lookback prior-month predictions for demand development;
 `scoring.py` creates batch-scored frozen anchors for downstream handoff.
+
+**Dynamic-market recency.** Evaluation training, rolling-origin historical anchors, and the
+final deployable refit use the configured recent lookback. Exponential half-life weights can
+further emphasize recent observations. The evaluated model is archived separately from the
+latest-window production model.
+
+**Incomplete competitor panels.** The default target requires at least `top_n` observed
+premiums rather than a fully complete panel. `panel.py` produces monthly coverage, eligibility,
+top-N composition, and incomplete-panel bias diagnostics used by QA and the dashboard.
 
 **Standalone boundary.** This repository does not call an external demand or optimisation
 platform. `demand_readiness.json` is a local signal diagnostic; final acceptance is downstream.

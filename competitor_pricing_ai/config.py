@@ -24,9 +24,11 @@ class ProjectConfig:
 class TargetConfig:
     name: str = "avg_top_3_competitor_premium"
     top_n: int = 3
-    missing_panel_policy: str = "complete"
+    missing_panel_policy: str = "available"
     aggregation: str = "avg_top_n"
     softmin_temperature: float = 25.0
+    minimum_monthly_competitor_coverage: float = 0.70
+    minimum_monthly_target_eligibility: float = 0.80
 
 
 @dataclass
@@ -99,7 +101,7 @@ class CatBoostConfig:
     learning_rate: float = 0.05
     depth: int = 6
     l2_leaf_reg: float = 3.0
-    loss_function: str = "Tweedie:variance_power=2"  # Gamma deviance
+    loss_function: str = "Tweedie:variance_power=1.9"
     early_stopping_rounds: int = 50
 
 
@@ -115,7 +117,7 @@ class LightGBMConfig:
 
 @dataclass
 class ModelConfig:
-    backend: str = "catboost"
+    backend: str = "sklearn"
     algorithm: str = "hist_gradient_boosting"
     objective: str = "regression"
     target_transform: str = "none"
@@ -149,6 +151,7 @@ class MonitoringConfig:
     performance_gini_drop_threshold: float = 0.05
     performance_mape_increase_threshold: float = 3.0
     max_prediction_horizon_days: int = 90
+    competitor_coverage_drop_threshold: float = 0.10
 
 
 @dataclass
@@ -171,6 +174,8 @@ class HistoricalPredictionsConfig:
     enabled: bool = True
     min_train_rows: int = 500
     retrain_frequency: str = "MS"
+    lookback_months: int = 4
+    recency_half_life_days: float | None = 60.0
 
 
 @dataclass
@@ -299,6 +304,10 @@ def validate_config(config: PipelineConfig) -> None:
         )
     if config.data.target.softmin_temperature <= 0:
         raise ConfigError("data.target.softmin_temperature must be positive")
+    if not (0 < config.data.target.minimum_monthly_competitor_coverage <= 1):
+        raise ConfigError("minimum_monthly_competitor_coverage must be between 0 and 1")
+    if not (0 < config.data.target.minimum_monthly_target_eligibility <= 1):
+        raise ConfigError("minimum_monthly_target_eligibility must be between 0 and 1")
     if (
         config.data.target.aggregation != "avg_top_n"
         and config.data.target.name.startswith("avg_top_")
@@ -347,6 +356,13 @@ def validate_config(config: PipelineConfig) -> None:
         raise ConfigError("historical_predictions.min_train_rows must be at least 20")
     if config.historical_predictions.retrain_frequency != "MS":
         raise ConfigError("Only monthly historical retraining (MS) is currently supported")
+    if config.historical_predictions.lookback_months < 1:
+        raise ConfigError("historical_predictions.lookback_months must be positive")
+    if (
+        config.historical_predictions.recency_half_life_days is not None
+        and config.historical_predictions.recency_half_life_days <= 0
+    ):
+        raise ConfigError("recency_half_life_days must be positive or null")
     if config.historical_predictions.enabled and config.model.backend != "sklearn":
         raise ConfigError(
             "historical_predictions currently requires model.backend: sklearn so historical "

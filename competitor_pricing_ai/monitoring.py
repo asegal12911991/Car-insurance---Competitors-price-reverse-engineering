@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -75,12 +76,26 @@ def run_monitoring(config_or_path: PipelineConfig | str | Path) -> dict[str, Any
             current_engineered[target_column], current_engineered["prediction"]
         )
 
+    training_quality_path = output_dir / "data_quality.json"
+    training_quality = (
+        json.loads(training_quality_path.read_text(encoding="utf-8"))
+        if training_quality_path.exists()
+        else {}
+    )
+    baseline_quote_rates = training_quality.get("competitor_quote_rates", {})
+    current_quote_rates = current_quality.get("competitor_quote_rates", {})
+    coverage_drops = {
+        competitor: baseline_quote_rates[competitor] - current_quote_rates[competitor]
+        for competitor in baseline_quote_rates.keys() & current_quote_rates.keys()
+    }
+
     refresh_recommendation = build_refresh_recommendation(
         drift,
         performance,
         output_dir / "metrics.json",
         config,
         prediction_horizon_days,
+        coverage_drops,
     )
     metrics = {
         "drift": drift,
@@ -98,6 +113,8 @@ def run_monitoring(config_or_path: PipelineConfig | str | Path) -> dict[str, Any
                 performance.get("mean_bias_pct") if performance else None
             ),
             "prediction_horizon_days": prediction_horizon_days,
+            "competitor_quote_rates": current_quote_rates,
+            "competitor_coverage_drops": coverage_drops,
         },
         "refresh_recommendation": refresh_recommendation,
     }
@@ -186,6 +203,7 @@ def build_refresh_recommendation(
     training_metrics_path: Path,
     config: PipelineConfig,
     prediction_horizon_days: int | None = None,
+    competitor_coverage_drops: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     drift_reviews = [
         item for item in drift if item.get("status") in {"review", "missing"}
@@ -201,10 +219,19 @@ def build_refresh_recommendation(
             f"Prediction horizon is {prediction_horizon_days} days; maximum is "
             f"{config.monitoring.max_prediction_horizon_days}"
         )
+    material_coverage_drops = {
+        competitor: drop
+        for competitor, drop in (competitor_coverage_drops or {}).items()
+        if drop >= config.monitoring.competitor_coverage_drop_threshold
+    }
+    if material_coverage_drops:
+        detail = ", ".join(
+            f"{competitor} ({drop:.1%})"
+            for competitor, drop in sorted(material_coverage_drops.items())
+        )
+        reasons.append(f"Competitor quote coverage dropped materially: {detail}")
 
     if current_performance and training_metrics_path.exists():
-        import json
-
         training_metrics = json.loads(training_metrics_path.read_text(encoding="utf-8"))
         test_metrics = training_metrics.get("test", {})
         # D² drop (falls back to R² for old metrics.json without d2 key)
